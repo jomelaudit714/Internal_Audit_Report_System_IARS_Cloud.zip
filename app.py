@@ -40,7 +40,7 @@ if pdf_file:
         edited_result = st.data_editor(
             result_df,
             use_container_width=True,
-            num_rows="dynamic",
+            num_rows="fixed",
             column_config={
                 "Findings": st.column_config.SelectboxColumn(
                     "Findings",
