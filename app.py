@@ -337,52 +337,42 @@ def make_issue_summary(issue, block):
         return "Petty cash voucher documentation issue was noted."
     return "Issue noted during audit review."
 
-
 def split_findings(text):
     body = get_report_body(text).replace("\r", "\n")
 
-    st.subheader("BODY DEBUG")
-    st.code(body[:5000])
+    issue_title_pattern = re.compile(
+        r"(?m)^(REVOLVING AND PETTY CASH FUND\s*\nCASH OVERAGE:\s*P[\d,]+\.\d{2}|"
+        r"LATE PREPARATION OF PCV:|"
+        r"OUTDATED MONITORING:|"
+        r"MIXING OF PETTY CASH AND REVOLVING FUND:|"
+        r"NO CASH SHORTAGE/OVERAGE|"
+        r"CASH SALES AND COLLECTION:\s*CASH OVERAGE:\s*P?[\d,]+\.\d{2}|"
+        r"CHANGE FUND:\s*\nNO CASH SHORTAGE/OVERAGE|"
+        r"[A-Z][A-Z0-9 ,/&().#₱P\-]+(?:OVERAGE|SHORTAGE|PCV|MONITORING|FUND|RECEIPT|DOCUMENT|INFORMATION|PURPOSE|THRESHOLD)[A-Z0-9 ,:/&().#₱P\-]*:?)"
+    )
 
-    return []
-
-    lines = body.splitlines()
-    issue_starts = []
-
-    for i, line in enumerate(lines):
-        if re.match(r"^\s*\d{1,2}\.\s*$", line):
-            issue_starts.append(i)
-
+    matches = list(issue_title_pattern.finditer(body))
     items = []
 
-    for idx, start_i in enumerate(issue_starts):
-        end_i = issue_starts[idx + 1] if idx + 1 < len(issue_starts) else len(lines)
-        segment = [clean_text(x) for x in lines[start_i + 1:end_i] if clean_text(x)]
+    for idx, m in enumerate(matches):
+        issue_no = str(idx + 1)
+        raw_title = clean_text(m.group(1)).strip(":")
 
-        if not segment:
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        block = body[start:end]
+
+        # Clean issue title
+        raw_title = raw_title.replace("\n", " ")
+        raw_title = clean_text(raw_title)
+
+        if raw_title.upper() in ["NONE", "ACTION TAKEN"]:
             continue
-
-        title_lines = []
-        body_lines = []
-
-        for line in segment:
-            if line.upper() == line and len(line) <= 120 and not line.startswith("We recommend"):
-                title_lines.append(line)
-            else:
-                body_lines.append(line)
-
-        if not title_lines:
-            title_lines = [segment[0]]
-            body_lines = segment[1:]
-
-        raw_title = clean_text(" ".join(title_lines)).strip(":")
-
-        block = "\n".join(body_lines)
 
         rec1, rec2 = extract_recommendations(block)
 
         items.append({
-            "issue_no": str(len(items) + 1),
+            "issue_no": issue_no,
             "issue": raw_title,
             "block": block,
             "recommendation1": rec1,
