@@ -162,7 +162,9 @@ def extract_pdf_text(uploaded_file):
                         full_text += " | ".join(row) + "\n"
 
             full_text += "\n" + page_text + "\n"
-
+    st.subheader("TABLE DEBUG")
+    st.code(full_text[:5000])
+    
     return full_text
 
 
