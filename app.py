@@ -237,25 +237,37 @@ def classify_finding(issue, recommendation):
 
 def get_report_body(text):
     t = (text or "").replace("\r", "\n")
-    starts = []
-    for marker in ["Issue \nNo. Audit Findings Recommendation", "Issue No. Audit Findings Recommendation", "Audit Findings Recommendation"]:
-        pos = t.lower().find(marker.lower())
-        if pos >= 0:
-            starts.append(pos + len(marker))
-    if not starts:
-        obj_pos = t.lower().find("objective")
-        search_from = obj_pos if obj_pos >= 0 else 0
-        m = re.search(r"\n\s*1\.\s*\n", t[search_from:])
-        if m:
-            starts.append(search_from + m.start())
-    start = min(starts) if starts else 0
 
-    ends = []
-    for marker in ["Prepared/Audited by", "Prepared by", "Reviewed by", "Noted by", "cc:", "EXHIBIT A", "EXHIBIT B", "Request for Soft Copy"]:
+    start = 0
+
+    patterns = [
+        r"Issue\s*No\..*?Audit Findings.*?Recommendation",
+        r"Audit Findings.*?Recommendation",
+        r"Issue\s*No\."
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, t, re.I | re.S)
+        if m:
+            start = m.end()
+            break
+
+    end = len(t)
+
+    for marker in [
+        "Prepared/Audited by",
+        "Prepared by",
+        "Reviewed by",
+        "Noted by",
+        "cc:",
+        "EXHIBIT A",
+        "EXHIBIT B",
+        "Request for Soft Copy"
+    ]:
         pos = t.find(marker, start)
-        if pos >= 0:
-            ends.append(pos)
-    end = min(ends) if ends else len(t)
+        if pos > 0:
+            end = min(end, pos)
+
     return t[start:end]
 
 
@@ -328,27 +340,47 @@ def make_issue_summary(issue, block):
 
 def split_findings(text):
     body = get_report_body(text).replace("\r", "\n")
+
+    # Debug while testing only
+    st.write("BODY DEBUG")
+    st.text(body[:3000])
+
     matches = list(re.finditer(
-        r"\n?\s*(\d{1,2})\.\s*\n\s*([A-Z][A-Z0-9 ,:/&().#₱P\-]+(?:\n[A-Z][A-Z0-9 ,:/&().#₱P\-]+)*)",
-        body
+        r"(?:^|\n)\s*(\d{1,2})\.\s*\n+([\s\S]*?)(?=(?:\n\s*\d{1,2}\.\s*\n)|$)",
+        body,
+        re.MULTILINE
     ))
 
     items = []
+
     for idx, m in enumerate(matches):
         issue_no = m.group(1)
-        raw_title = clean_text(m.group(2)).strip(":")
-        start = m.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        block = body[start:end]
+        block_text = m.group(2)
 
-        raw_title = re.sub(r"\bAudit Findings\b|\bRecommendation\b|\bIssue No\b", "", raw_title, flags=re.I).strip()
-        false_terms = ["TO :", "FROM :", "RE :", "DATE :", "REF :", "AUDITEE NAME", "POSITION :", "COMPANY/DEPT", "PERIOD DATE", "SCOPE :", "OBJECTIVE"]
+        lines = [
+            clean_text(x)
+            for x in block_text.splitlines()
+            if clean_text(x)
+        ]
+
+        if not lines:
+            continue
+
+        raw_title = lines[0].strip(":")
+
+        false_terms = [
+            "TO :", "FROM :", "RE :", "DATE :", "REF :",
+            "AUDITEE NAME", "POSITION :", "COMPANY/DEPT",
+            "PERIOD DATE", "SCOPE :", "OBJECTIVE"
+        ]
+
         if any(term.replace(" ", "").lower() in raw_title.replace(" ", "").lower() for term in false_terms):
             continue
-        if len(raw_title) < 3:
-            continue
+
+        block = "\n".join(lines[1:])
 
         rec1, rec2 = extract_recommendations(block)
+
         items.append({
             "issue_no": issue_no,
             "issue": raw_title,
@@ -358,8 +390,8 @@ def split_findings(text):
             "explanation": extract_explanation(block),
             "correction": extract_correction(block),
         })
-    return items
 
+    return items
 
 def filter_no_findings_when_other_issues(items):
     actual = []
