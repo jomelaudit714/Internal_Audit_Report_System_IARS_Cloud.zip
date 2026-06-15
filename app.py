@@ -341,8 +341,10 @@ def make_issue_summary(issue, block):
 def split_findings(text):
     body = get_report_body(text).replace("\r", "\n")
 
-    st.write("BODY DEBUG")
-    st.code(body[:3000])
+    st.subheader("BODY DEBUG")
+    st.code(body[:5000])
+
+    return []
 
     lines = body.splitlines()
     issue_starts = []
