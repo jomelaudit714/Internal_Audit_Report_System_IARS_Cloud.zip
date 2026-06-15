@@ -341,51 +341,46 @@ def make_issue_summary(issue, block):
 def split_findings(text):
     body = get_report_body(text).replace("\r", "\n")
 
-    st.subheader("BODY DEBUG")
-    st.code(body[:5000])
-
-    # Debug while testing only
     st.write("BODY DEBUG")
-    st.text(body[:3000])
+    st.code(body[:3000])
 
-    matches = list(re.finditer(
-        r"(?:^|\n)\s*(\d{1,2})\.\s*\n+([\s\S]*?)(?=(?:\n\s*\d{1,2}\.\s*\n)|$)",
-        body,
-        re.MULTILINE
-    ))
+    lines = body.splitlines()
+    issue_starts = []
+
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*\d{1,2}\.\s*$", line):
+            issue_starts.append(i)
 
     items = []
 
-    for idx, m in enumerate(matches):
-        issue_no = m.group(1)
-        block_text = m.group(2)
+    for idx, start_i in enumerate(issue_starts):
+        end_i = issue_starts[idx + 1] if idx + 1 < len(issue_starts) else len(lines)
+        segment = [clean_text(x) for x in lines[start_i + 1:end_i] if clean_text(x)]
 
-        lines = [
-            clean_text(x)
-            for x in block_text.splitlines()
-            if clean_text(x)
-        ]
-
-        if not lines:
+        if not segment:
             continue
 
-        raw_title = lines[0].strip(":")
+        title_lines = []
+        body_lines = []
 
-        false_terms = [
-            "TO :", "FROM :", "RE :", "DATE :", "REF :",
-            "AUDITEE NAME", "POSITION :", "COMPANY/DEPT",
-            "PERIOD DATE", "SCOPE :", "OBJECTIVE"
-        ]
+        for line in segment:
+            if line.upper() == line and len(line) <= 120 and not line.startswith("We recommend"):
+                title_lines.append(line)
+            else:
+                body_lines.append(line)
 
-        if any(term.replace(" ", "").lower() in raw_title.replace(" ", "").lower() for term in false_terms):
-            continue
+        if not title_lines:
+            title_lines = [segment[0]]
+            body_lines = segment[1:]
 
-        block = "\n".join(lines[1:])
+        raw_title = clean_text(" ".join(title_lines)).strip(":")
+
+        block = "\n".join(body_lines)
 
         rec1, rec2 = extract_recommendations(block)
 
         items.append({
-            "issue_no": issue_no,
+            "issue_no": str(len(items) + 1),
             "issue": raw_title,
             "block": block,
             "recommendation1": rec1,
