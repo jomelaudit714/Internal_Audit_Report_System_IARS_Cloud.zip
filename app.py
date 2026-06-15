@@ -501,6 +501,7 @@ def build_rows(text, master_df, manual_df):
     auditor_default = prepared_by_auditor(text)
     audit_type = classify_audit_type(text)
     items = filter_no_findings_when_other_issues(split_findings(text))
+    st.write("DEBUG ITEMS:", items)
 
     manual_map = {}
     if manual_df is not None and not manual_df.empty:
