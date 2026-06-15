@@ -272,32 +272,45 @@ def get_report_body(text):
 
 
 def extract_recommendations(block):
+
     patterns = [
-        r"(We recommend(?: that)?\s+.+?)(?=\n\s*\d+\.|\n[A-Z][A-Z /&()-]{5,}:|\nAction Taken:|\nPrepared|\Z)",
-        r"(Please review\s+.+?)(?=\n\s*\d+\.|\n[A-Z][A-Z /&()-]{5,}:|\nAction Taken:|\nPrepared|\Z)",
-        r"(We advise\s+.+?)(?=\n\s*\d+\.|\n[A-Z][A-Z /&()-]{5,}:|\nAction Taken:|\nPrepared|\Z)",
+        r"(We recommend(?: that)?\s+.*?)(?=Action Taken:|NONE\b|$)",
+        r"(We advise\s+.*?)(?=Action Taken:|NONE\b|$)",
+        r"(Please review\s+.*?)(?=Action Taken:|NONE\b|$)",
+        r"(It is recommended\s+.*?)(?=Action Taken:|NONE\b|$)",
     ]
-    rec = ""
+
     for pat in patterns:
         m = re.search(pat, block, re.I | re.S)
         if m:
             rec = clean_text(m.group(1))
-            break
-    if not rec or rec.upper() in ["NONE", "N/A"]:
-        return "None", "None"
-    rec = rec.replace("We recommend that ", "").replace("We recommend ", "").strip()
-    return (rec[0].upper() + rec[1:] if rec else rec), "None"
+
+            rec = re.sub(
+                r"^(We recommend(?: that)?|We advise|Please review|It is recommended)\s+",
+                "",
+                rec,
+                flags=re.I
+            )
+
+            return rec.strip(), "None"
+
+    return "None", "None"
 
 
 def extract_explanation(block):
-    pats = [
-        r"((?:Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated).+?)(?=We recommend|Please review|We advise|Action Taken:|\Z)",
-        r"((?:According to|As per)\s+.+?)(?=We recommend|Please review|We advise|Action Taken:|\Z)"
+    text = clean_text(block)
+
+    patterns = [
+        r"((?:Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated)\s+.+?)(?=We recommend|Please review|We advise|It is recommended|Action Taken:|$)",
+        r"((?:According to|As per)\s+.+?)(?=We recommend|Please review|We advise|It is recommended|Action Taken:|$)",
+        r"((?:He|She|They)\s+(?:claimed|explained|stated)\s+.+?)(?=We recommend|Please review|We advise|It is recommended|Action Taken:|$)",
     ]
-    for pat in pats:
-        m = re.search(pat, block, re.I | re.S)
+
+    for pat in patterns:
+        m = re.search(pat, text, re.I)
         if m:
             return clean_text(m.group(1))
+
     return "None"
 
 
