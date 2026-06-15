@@ -127,14 +127,43 @@ def cloud_enabled():
 
 
 def extract_pdf_text(uploaded_file):
+
     if pdfplumber is None:
         st.error("pdfplumber is not installed.")
         return ""
-    text = ""
+
+    full_text = ""
+
     with pdfplumber.open(uploaded_file) as pdf:
+
         for page in pdf.pages:
-            text += "\n" + (page.extract_text() or "")
-    return text
+
+            # Normal text extraction
+            page_text = page.extract_text() or ""
+
+            # Table extraction
+            tables = page.extract_tables()
+
+            if tables:
+
+                for table in tables:
+
+                    for row in table:
+
+                        if not row:
+                            continue
+
+                        row = [
+                            clean_text(str(cell))
+                            if cell is not None else ""
+                            for cell in row
+                        ]
+
+                        full_text += " | ".join(row) + "\n"
+
+            full_text += "\n" + page_text + "\n"
+
+    return full_text
 
 
 def find_after_label(text, labels):
