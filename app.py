@@ -345,8 +345,8 @@ st.subheader("BODY DEBUG")
 st.code(body[:5000])
 
     # Debug while testing only
-    st.write("BODY DEBUG")
-    st.text(body[:3000])
+st.write("BODY DEBUG")
+st.text(body[:3000])
 
     matches = list(re.finditer(
         r"(?:^|\n)\s*(\d{1,2})\.\s*\n+([\s\S]*?)(?=(?:\n\s*\d{1,2}\.\s*\n)|$)",
