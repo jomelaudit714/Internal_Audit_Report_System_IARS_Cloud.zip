@@ -341,12 +341,12 @@ def make_issue_summary(issue, block):
 def split_findings(text):
     body = get_report_body(text).replace("\r", "\n")
 
-st.subheader("BODY DEBUG")
-st.code(body[:5000])
+    st.subheader("BODY DEBUG")
+    st.code(body[:5000])
 
     # Debug while testing only
-st.write("BODY DEBUG")
-st.text(body[:3000])
+    st.write("BODY DEBUG")
+    st.text(body[:3000])
 
     matches = list(re.finditer(
         r"(?:^|\n)\s*(\d{1,2})\.\s*\n+([\s\S]*?)(?=(?:\n\s*\d{1,2}\.\s*\n)|$)",
