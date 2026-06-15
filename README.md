@@ -1,37 +1,25 @@
-# Internal Audit Report System (IARS)
+# Internal Audit Report System V2 - Structured Table Parser
 
-Cloud-ready web app for:
-- Audit PDF upload
-- PDF cloud storage
-- Audit report archive
-- Findings database
-- Search by REF and Auditee Name
-- Excel output
-- Supabase database and storage
+This is a clean replacement version designed to avoid the chaotic regex patches.
 
-## Local Run
+## Main change
+This version uses `pdfplumber.page.extract_tables()` first, so issue details and recommendations are captured by table columns instead of mixed paragraph text.
+
+## Run locally
 
 ```cmd
 pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-## Cloud Setup
+## Upload to Streamlit
+Upload these files to GitHub:
+- app.py
+- iars_parser.py
+- requirements.txt
+- README.md
 
-1. Create a Supabase project.
-2. Run `supabase_schema.sql` in Supabase SQL Editor.
-3. Create a private Supabase Storage bucket named `audit-pdfs`.
-4. Add environment variables:
-   - SUPABASE_URL
-   - SUPABASE_SERVICE_ROLE_KEY
-   - SUPABASE_BUCKET=audit-pdfs
-5. Deploy to Streamlit Cloud, Render, or Railway.
-6. Point `internalauditreportsystem.com` to the deployed app.
-
-## Notes
-
-This is a starter cloud-ready system. For production use, add:
-- Proper login and role permissions
-- Row-level security policies
-- Admin user management
-- Secure secrets management
+Main file path:
+```text
+app.py
+```
