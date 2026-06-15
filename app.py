@@ -303,16 +303,17 @@ def get_report_body(text):
 
 
 def extract_recommendations(block):
+    text = clean_text(block)
 
     patterns = [
-        r"(We recommend(?: that)?\s+.*?)(?=Action Taken:|NONE\b|$)",
-        r"(We advise\s+.*?)(?=Action Taken:|NONE\b|$)",
-        r"(Please review\s+.*?)(?=Action Taken:|NONE\b|$)",
-        r"(It is recommended\s+.*?)(?=Action Taken:|NONE\b|$)",
+        r"(We recommend(?: that)?\s+.+?)(?=Action Taken:|NONE\b|$)",
+        r"(We advise\s+.+?)(?=Action Taken:|NONE\b|$)",
+        r"(Please review\s+.+?)(?=Action Taken:|NONE\b|$)",
+        r"(It is recommended\s+.+?)(?=Action Taken:|NONE\b|$)",
     ]
 
     for pat in patterns:
-        m = re.search(pat, block, re.I | re.S)
+        m = re.search(pat, text, re.I)
         if m:
             rec = clean_text(m.group(1))
 
@@ -323,27 +324,39 @@ def extract_recommendations(block):
                 flags=re.I
             )
 
-            return rec.strip(), "None"
+            # Remove accidental issue numbers inside recommendation
+            rec = re.sub(r"\b\d+\.\s*", "", rec)
+
+            return clean_text(rec), "None"
 
     return "None", "None"
 
-
 def extract_explanation(block):
-    text = clean_text(block)
+    text = block
+
+    # Only search before recommendation/action section
+    text = re.split(
+        r"We recommend|Please review|We advise|It is recommended|Action Taken:",
+        text,
+        flags=re.I
+    )[0]
+
+    text = clean_text(text)
 
     patterns = [
-        r"((?:Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated)\s+.+?)(?=We recommend|Please review|We advise|It is recommended|Action Taken:|$)",
-        r"((?:According to|As per)\s+.+?)(?=We recommend|Please review|We advise|It is recommended|Action Taken:|$)",
-        r"((?:He|She|They)\s+(?:claimed|explained|stated)\s+.+?)(?=We recommend|Please review|We advise|It is recommended|Action Taken:|$)",
+        r"((?:Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated)\s+.+)",
+        r"((?:According to|As per)\s+.+)",
+        r"((?:He|She|They)\s+(?:claimed|explained|stated)\s+.+)",
     ]
 
     for pat in patterns:
         m = re.search(pat, text, re.I)
         if m:
-            return clean_text(m.group(1))
+            explanation = clean_text(m.group(1))
+            explanation = re.sub(r"\(See Exhibit [A-Z]\)", "", explanation, flags=re.I)
+            return clean_text(explanation)
 
     return "None"
-
 
 def extract_correction(block):
     m = re.search(r"Action Taken\s*:\s*(.+?)(?=\n\s*\d+\.|\nPrepared|\nReviewed|\nNoted|\Z)", block, re.I | re.S)
@@ -380,6 +393,11 @@ def make_issue_summary(issue, block):
     if "pcv" in combined:
         return "Petty cash voucher documentation issue was noted."
     return "Issue noted during audit review."
+    
+def clean_block_before_extract(block):
+    block = re.sub(r"\b\d+\.\s*", "", block)
+    block = re.sub(r"\(See Exhibit [A-Z]\)", "", block, flags=re.I)
+    return block
 
 def split_findings(text):
     body = get_report_body(text).replace("\r", "\n")
@@ -404,7 +422,7 @@ def split_findings(text):
 
         start = m.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        block = body[start:end]
+        block = clean_block_before_extract(body[start:end])
 
         # Clean issue title
         raw_title = raw_title.replace("\n", " ")
@@ -484,18 +502,37 @@ def match_employee(master_df, auditee_name):
 
 
 def prepared_by_auditor(text):
-    m = re.search(r"Prepared(?:/Audited)? by\s*:\s*(.+?)(?:Reviewed by|Noted by|cc:|Audit/file|$)", text, re.I | re.S)
-    area = m.group(1).upper() if m else ""
-    for auditor in AUDITORS:
-        toks = [t.upper() for t in auditor.split() if len(t) > 2]
-        if toks and toks[0] in area and toks[-1].replace(".", "") in area.replace(".", ""):
-            return auditor
+    m = re.search(
+        r"Prepared(?:/Audited)? by\s*:\s*(.*?)(?:Reviewed by|Noted by|cc:|Audit/file|$)",
+        text,
+        re.I | re.S
+    )
+
+    if not m:
+        return "None"
+
+    area = m.group(1).upper()
+
     if "SARINA" in area and "AMURAW" in area:
         return "Sarina Amuraw"
+    if "CRIS" in area and "CANONOY" in area:
+        return "Cris Canonoy"
     if "PATRICIA" in area and "DEL ROSARIO" in area:
         return "Patricia Anne Del Rosario"
-    return "None"
+    if "JOMEL" in area and "SANTIAGO" in area:
+        return "Jomel Santiago"
+    if "ANTONIO" in area and "BIDES" in area:
+        return "Antonio P. Bides"
+    if "JED" in area and "LASERNA" in area:
+        return "Jed Laserna"
+    if "JOSHUA" in area and "CATIS" in area:
+        return "Joshua Christopher Catis"
+    if "TRECE" in area and "GENERATO" in area:
+        return "Trece Generato Jr."
+    if "NOEL" in area and "BUENA" in area:
+        return "Noel Buena"
 
+    return "None"
 
 def classify_audit_type(text):
     lower = text.lower()
