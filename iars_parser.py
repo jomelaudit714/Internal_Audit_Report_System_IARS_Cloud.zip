@@ -442,7 +442,7 @@ if any(p in combined for p in no_finding_patterns):
     amount = max(amounts) if amounts else None
 
     # 1. No Findings
-        if "no cash shortage" in issue_lower or "no findings" in issue_lower:
+    if "no cash shortage" in issue_lower or "no findings" in issue_lower:
         return "No Findings 10"
 
     # 2. Monetary findings first
