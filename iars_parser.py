@@ -40,18 +40,76 @@ FREQUENCY_RATE = {
 }
 
 FINDINGS_DROPDOWN = [
+
+    "Stock Overage (₱3,000.00 and above) -4",
+    "Stock Overage (below ₱3,000.00) -2",
+
+    "Stock Shortage (₱3,000.00 and above) -8",
+    "Stock Shortage (below ₱3,000.00) -4",
+
     "Cash/Fund/Collection Overage (₱1,000.00 and above) -4",
     "Cash/Fund/Collection Overage (below ₱1,000.00) -2",
+
     "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8",
     "Cash/Fund/Collection Shortage (below ₱3,000.00) -4",
+
+    "Non-Remittance Of Collection (₱3,000.00 and above) -8",
+    "Non-Remittance Of Collection (below ₱3,000.00) -4",
+
     "Delayed Deposits -3",
+
+    "Late/Non-Issuance Of Receipts -6",
+
+    "Damaged and/or Lost Stocks Due To Negligence (₱3,000.00 and above) -10",
+    "Damaged and/or Lost Stocks Due To Negligence (below ₱3,000.00) -3",
+
+    "SOTEX and/or Expired Issues (₱3,000.00 and above) -4",
+    "SOTEX and/or Expired Issues (below ₱3,000.00) -2",
+
+    "Additional Credit Term With Overdue / Giving Credit Terms To Non-Credit Customer -7",
+
     "Omission & Alteration Of Details in Documents -7",
+
+    "Turn Over Sales -10",
+
+    "Stock Pull-Out -10",
+
+    "Possession and/or Peddling Non-EDL Products -10",
+
+    "Denied Invoices (DR, PR & SI) -10",
+
+    "Issuance Of Unofficial/Fabricated Documents -10",
+
+    "Uncooperative or Failed To Produce Documents/Results Within Reasonable Time -4",
+
     "Unavailable or Unreliable Inventory Records -6",
+
     "Missing, Misused or Lost Of Documents/Asset(s) -3",
+
+    "Material Inventory Shortage (₱3,000.00 and above) -5",
+
+    "Material Inventory Shortage (below ₱3,000.00) -3",
+
+    "Material Inventory Overage (Variance) -2",
+
     "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4",
+
     "Ignore or Disregard Office/Operation Best Practices -3",
+
+    "Manipulate To Deceive or Defraud For Personal Gain -10",
+
+    "Unethical Act or Behavior -6",
+
+    "Unobservant / Failure To Follow Instructed Procedures -2",
+
+    "Unauthorized Use of Asset(s) -2",
+
+    "Delivery and/or Computation, Reporting Error(s) -2",
+
     "Immaterial Findings 3",
-    "No Findings 10",
+
+    "No Findings 10"
+
 ]
 
 REACTION_OPTIONS = [
@@ -251,42 +309,110 @@ def make_issue_summary(issue, narrative):
     return "Issue noted during audit review."
 
 def classify_finding(issue, recommendation):
-    issue_lower = issue.lower()
-    rec_lower = recommendation.lower()
+    issue_lower = clean_text(issue).lower()
+    rec_lower = clean_text(recommendation).lower()
+    combined = f"{issue_lower} {rec_lower}"
+
     amounts = extract_money_amounts(issue)
     amount = max(amounts) if amounts else None
 
+    # 1. No Findings
     if "no cash shortage" in issue_lower or "no findings" in issue_lower:
         return "No Findings 10"
 
-    if "overage" in issue_lower:
+    # 2. Monetary findings first
+    if "overage" in issue_lower and any(x in issue_lower for x in ["cash", "fund", "collection", "sales"]):
         if amount is not None and amount < 1000:
             return "Immaterial Findings 3"
         return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
 
-    if "shortage" in issue_lower:
+    if "shortage" in issue_lower and any(x in issue_lower for x in ["cash", "fund", "collection", "sales"]):
         if amount is not None and amount < 1000:
             return "Immaterial Findings 3"
         if amount is not None and amount < 3000:
             return "Cash/Fund/Collection Shortage (below ₱3,000.00) -4"
         return "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8"
 
-    if "immaterial" in issue_lower:
-        return "Immaterial Findings 3"
+    if "stock overage" in issue_lower:
+        if amount is not None and amount < 3000:
+            return "Stock Overage (below ₱3,000.00) -2"
+        return "Stock Overage (₱3,000.00 and above) -4"
 
-    # Documentation issues stay under best practices.
-    if any(t in issue_lower for t in ["pcv", "voucher", "receipt information", "incomplete receipt", "incorrect receipt", "cv information", "document"]):
-        return "Ignore or Disregard Office/Operation Best Practices -3"
+    if "stock shortage" in issue_lower:
+        if amount is not None and amount < 3000:
+            return "Stock Shortage (below ₱3,000.00) -4"
+        return "Stock Shortage (₱3,000.00 and above) -8"
 
-    # Policy/procedure recommendation triggers nonconformity.
-    if any(t in rec_lower for t in ["policy", "policies", "procedure", "procedures", "guidelines", "sop"]):
+    # 3. Specific categories
+    if "non-remittance" in combined or "not remitted" in combined or "unremitted" in combined:
+        if amount is not None and amount < 3000:
+            return "Non-Remittance Of Collection (below ₱3,000.00) -4"
+        return "Non-Remittance Of Collection (₱3,000.00 and above) -8"
+
+    if "delayed deposit" in combined or "late deposit" in combined:
+        return "Delayed Deposits -3"
+
+    if "late issuance of receipt" in combined or "non-issuance of receipt" in combined:
+        return "Late/Non-Issuance Of Receipts -6"
+
+    if "omission" in combined or "alteration" in combined:
+        return "Omission & Alteration Of Details in Documents -7"
+
+    if "unavailable inventory" in combined or "unreliable inventory" in combined:
+        return "Unavailable or Unreliable Inventory Records -6"
+
+    if "missing" in combined and ("document" in combined or "asset" in combined):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+
+    if "misused" in combined and ("document" in combined or "asset" in combined):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+
+    if "lost" in combined and ("document" in combined or "asset" in combined):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+
+    if "unauthorized use" in combined and "asset" in combined:
+        return "Unauthorized Use of Asset(s) -2"
+
+    if "delivery error" in combined or "computation error" in combined or "reporting error" in combined:
+        return "Delivery and/or Computation, Reporting Error(s) -2"
+
+    if "unethical" in combined:
+        return "Unethical Act or Behavior -6"
+
+    if "manipulate" in combined or "deceive" in combined or "defraud" in combined:
+        return "Manipulate To Deceive or Defraud for Personal Gain -10"
+
+    if "uncooperative" in combined:
+        return "Uncooperative or failed to produce documents/results on a reasonable time given -4"
+
+    # 4. Nonconformity vs Best Practice hierarchy
+    policy_keywords = [
+        "nonconformity",
+        "non-compliance",
+        "not following proper procedure",
+        "proper procedure",
+        "policy",
+        "policies",
+        "procedure",
+        "procedures",
+        "guidelines",
+        "sop",
+        "process",
+        "memorandum",
+        "written requirement",
+        "required procedure",
+        "must be followed"
+    ]
+
+    if any(k in combined for k in policy_keywords):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    if any(t in issue_lower for t in ["monitoring", "mixing", "fund"]):
-        return "Ignore or Disregard Office/Operation Best Practices -3"
+    # 5. Immaterial only if specifically stated and no higher category applies
+    if "immaterial" in combined:
+        return "Immaterial Findings 3"
 
+    # 6. Best Practices default/fallback
     return "Ignore or Disregard Office/Operation Best Practices -3"
-
 
 def detect_reaction(issue, narrative, recommendation):
     text = f"{issue} {narrative} {recommendation}".lower()
