@@ -328,6 +328,7 @@ def find_issue_title_entries(lines):
 
 def normalize_recommendation(rec):
     rec = clean_text(rec).replace("NONE.", "None").strip()
+    rec = re.sub(r"^(?:of|to|the|be|no|not|as)\s+(?=(We recommend|We advise|Please review|Mr\.|Ms\.|The\s))", "", rec, flags=re.I)
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
     rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
@@ -336,6 +337,11 @@ def normalize_recommendation(rec):
     rec = re.sub(r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain)\b", lambda m: m.group(2).capitalize(), rec, flags=re.I)
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
+
+    # Clean common right-column spill artifacts from PDF extraction.
+    rec = re.sub(r"\bprevent\s+be\s+discrepancies\b", "prevent discrepancies", rec, flags=re.I)
+    rec = re.sub(r"\b25%\s+not\s+utilization\b", "25% utilization", rec, flags=re.I)
+    rec = re.sub(r"\bfund\s+as\s+depletion\b", "fund depletion", rec, flags=re.I)
     return rec[0].upper() + rec[1:] if rec else "None"
 
 
@@ -555,32 +561,134 @@ def remove_title_from_segment(segment, title):
 
 
 def extract_finding_rows_from_pdf(pdf_file):
-    text = extract_all_text(pdf_file)
-    body = crop_report_body(text)
-    lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
-    entries = find_issue_title_entries(lines)
+    """
+    Hybrid parser:
+    - Uses PDF coordinates to keep Audit Findings (left column) separate from Recommendation (right column).
+    - Uses bold/title-like lines in the left column as the issue title.
+    - Does not rely on issue numbers because some PDFs do not extract the issue number as text.
+    """
     rows = []
+    pdf_file.seek(0)
+
+    line_rows = []
+    x_cut = 395
+
+    with pdfplumber.open(pdf_file) as pdf:
+        for page_no, page in enumerate(pdf.pages, 1):
+            words = page.extract_words(x_tolerance=2, y_tolerance=3, keep_blank_chars=False) or []
+            grouped = {}
+            for w in words:
+                key = round(w.get("doctop", w["top"]) / 3) * 3
+                grouped.setdefault(key, []).append(w)
+
+            for key in sorted(grouped):
+                ws = sorted(grouped[key], key=lambda x: x["x0"])
+                left_words = [w for w in ws if w["x0"] < x_cut]
+                right_words = [w for w in ws if w["x0"] >= x_cut]
+
+                left = clean_text(" ".join(w["text"] for w in left_words))
+                right = clean_text(" ".join(w["text"] for w in right_words))
+                full = clean_text(" ".join(w["text"] for w in ws))
+
+                line_rows.append({
+                    "page": page_no,
+                    "key": key,
+                    "left": left,
+                    "right": right,
+                    "full": full,
+                })
+
+    pdf_file.seek(0)
+
+    # Crop to the audit findings body.
+    start_idx = 0
+    for i, ln in enumerate(line_rows):
+        if re.search(r"No\.\s+Audit Findings\s+Recommendation", ln["full"], re.I):
+            start_idx = i + 1
+            break
+        if clean_text(ln["left"]).lower() == "no.":
+            start_idx = i + 1
+            break
+
+    end_idx = len(line_rows)
+    for i, ln in enumerate(line_rows[start_idx:], start_idx):
+        if re.search(r"Prepared/Audited by:|Prepared by:|Reviewed by:|Noted by:|^cc:|^EXHIBIT\s+A|^Request for Soft Copy", ln["full"], re.I):
+            end_idx = i
+            break
+
+    body_lines = line_rows[start_idx:end_idx]
+
+    # Detect issue title entries from the LEFT/Audit Findings column.
+    entries = []
+    i = 0
+    while i < len(body_lines):
+        first_title = extract_title_prefix(body_lines[i]["left"])
+        if not first_title:
+            i += 1
+            continue
+
+        start = i
+        title_parts = [first_title]
+        i += 1
+
+        while i < len(body_lines):
+            nxt = extract_title_prefix(body_lines[i]["left"])
+            if nxt:
+                title_parts.append(nxt)
+                i += 1
+            else:
+                break
+
+        entries.append({
+            "start": start,
+            "end_title": i,
+            "title": normalize_title(" ".join(title_parts)),
+        })
 
     for idx, entry in enumerate(entries):
-        start = entry["start"]
-        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
-        segment_lines = lines[start:next_start]
-        segment = "\n".join(segment_lines)
+        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(body_lines)
+        segment = body_lines[entry["start"]:next_start]
+
+        narrative_lines = []
+        for ln in body_lines[entry["end_title"]:next_start]:
+            left = clean_text(ln["left"])
+            if not left:
+                continue
+            # Remove extracted issue-number artifacts like "1." or "4. consolidate...".
+            left = re.sub(r"^\d{1,2}\.\s*", "", left).strip()
+            if left:
+                narrative_lines.append(left)
+
+        right_lines = []
+        right_noise = {"of", "to", "the", "be", "no", "not", "as"}
+        for ln in segment:
+            rtxt = clean_text(ln["right"])
+            if not rtxt:
+                continue
+            if rtxt.lower() in right_noise:
+                continue
+            right_lines.append(rtxt)
+
         issue_title = entry["title"]
-        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
+        narrative = "\n".join(narrative_lines)
+        recommendation_raw = "\n".join(right_lines)
+        recommendation = normalize_recommendation(recommendation_raw) if recommendation_raw else "None"
+
+        # If the recommendation column is blank but the left segment has standalone NONE, treat as None.
+        if not recommendation_raw and any(clean_text(ln["left"]).upper() in ["NONE", "NONE."] for ln in segment):
+            recommendation = "None"
 
         rows.append({
             "issue_no": str(idx + 1),
             "issue": issue_title,
-            "narrative": remove_action_taken(narrative_segment),
-            "recommendation1": extract_recommendation_from_segment(segment),
+            "narrative": remove_action_taken(narrative),
+            "recommendation1": recommendation,
             "recommendation2": "None",
-            "explanation": extract_explanation_from_narrative(narrative_segment),
-            "correction": extract_correction_from_text(segment),
+            "explanation": extract_explanation_from_narrative(narrative),
+            "correction": extract_correction_from_text("\n".join([ln["left"] for ln in segment] + [ln["right"] for ln in segment])),
         })
 
     return rows
-
 
 def filter_no_findings_when_other_issues(items):
     # Keep every numbered row. A separate No Findings row can be valid for a specific auditee/activity.
@@ -635,7 +743,7 @@ def build_records(pdf_file, master_df=None, manual_df=None):
             row_no, date.today().isoformat(), audit_type, header["date_reported"],
             header["audit_reference"], emp_id, emp_name, task_id or "None",
             header["scope_date"], header["year"], findings,
-            make_issue_summary(item["issue"], item["narrative"]),
+            item["issue"],
             item["explanation"] or "None", item["recommendation1"] or "None",
             item["recommendation2"] or "None", auditor or "None", "None",
             reaction, frequency, item["correction"] or "None", "", case_status,
