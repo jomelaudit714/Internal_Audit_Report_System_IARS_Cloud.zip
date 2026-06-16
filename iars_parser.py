@@ -451,8 +451,17 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         manual = manual_map.get(item["issue_no"])
         task_id = header["task_id"]
         auditor = auditor_default
-        reaction = ""
-        frequency = ""
+        reaction = detect_reaction(
+    item["issue"],
+    item["narrative"],
+    item["recommendation1"]
+)
+
+frequency = detect_frequency(
+    item["issue"],
+    item["narrative"],
+    item["recommendation1"]
+)
 
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
