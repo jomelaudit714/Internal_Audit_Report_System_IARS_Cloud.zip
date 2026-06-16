@@ -419,12 +419,10 @@ def make_issue_summary(issue, narrative):
 
     return "Issue noted during audit review."
     
-def classify_finding(issue, recommendation, narrative="", company="", audit_title=""):
+def classify_finding(issue, recommendation, narrative=""):
     issue_lower = clean_text(issue).lower()
     rec_lower = clean_text(recommendation).lower()
     narrative_lower = clean_text(narrative).lower()
-    company_lower = clean_text(company).lower()
-    audit_title_lower = clean_text(audit_title).lower()
 
     combined = f"{issue_lower} {narrative_lower} {rec_lower}"
 
@@ -743,10 +741,9 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         findings = classify_finding(
             item["issue"],
             item["recommendation1"],
-            item["narrative"],
-            header.get("company", ""),
-            header.get("audit_title", "")
+            item["narrative"]
         )
+        
         score = parse_score(findings)
 
         if "No Findings" in findings or "Immaterial Findings" in findings:
