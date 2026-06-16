@@ -1,18 +1,21 @@
-# IARS v1.1 Final
+# Internal Audit Report System (IARS) v1.1
 
-This package preserves the last stable parser logic while adding:
+## Changes in v1.1
+- Master Data is stored permanently in `data/Master_Data.xlsx`.
+- Users no longer need to upload Master Data for every report.
+- Multiple audit report PDFs can be uploaded and processed at once.
+- Output is consolidated into one Excel file.
+- `Source PDF` column is added for traceability.
 
-- Permanent Master Data in `data/Master_Data.xlsx`
-- Multiple PDF upload
-- Consolidated Excel output
-- Issue Detail Issue = exact issue title from PDF
-- Recommendation = recommendation text only
+## Files
+- `app.py` - Streamlit interface
+- `iars_parser.py` - PDF parser and extraction logic
+- `requirements.txt` - Python dependencies
+- `data/Master_Data.xlsx` - permanent Master Data file
 
-Upload these files to GitHub:
+## How to update Master Data permanently
+Replace this file in GitHub:
 
-- `app.py`
-- `iars_parser.py`
-- `requirements.txt`
-- `data/Master_Data.xlsx`
+`data/Master_Data.xlsx`
 
-Do not upload old ZIP backup files to the repository root.
+Then commit changes and wait for Streamlit to redeploy.

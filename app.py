@@ -27,12 +27,7 @@ def load_master_data(path: str):
     """Load permanent Master Data from repository."""
     xls = pd.ExcelFile(path)
 
-    employees_df = (
-        pd.read_excel(path, sheet_name="Employees")
-        if "Employees" in xls.sheet_names
-        else pd.DataFrame()
-    )
-
+    employees_df = pd.read_excel(path, sheet_name="Employees") if "Employees" in xls.sheet_names else pd.DataFrame()
     sheets = {
         sheet: pd.read_excel(path, sheet_name=sheet)
         for sheet in xls.sheet_names
@@ -44,8 +39,8 @@ def load_master_data(path: str):
 def save_uploaded_master(uploaded_file):
     """Save uploaded Master Data to app folder.
 
-    In Streamlit Cloud, file changes made at runtime may not survive app restart/redeploy.
-    For a permanent update, replace data/Master_Data.xlsx in GitHub.
+    Note: On Streamlit Cloud, this persists during the current app runtime/session.
+    For permanent update across redeploys, replace data/Master_Data.xlsx in GitHub.
     """
     MASTER_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(MASTER_DATA_PATH, "wb") as f:
@@ -62,7 +57,7 @@ with st.sidebar:
         st.success("Master Data loaded from system.")
         st.caption(str(MASTER_DATA_PATH))
     else:
-        st.error("Master Data not found. Add data/Master_Data.xlsx in GitHub first.")
+        st.error("Master Data not found. Upload Master_Data.xlsx first.")
 
     with st.expander("Update Master Data"):
         uploaded_master = st.file_uploader(
@@ -75,7 +70,7 @@ with st.sidebar:
             if st.button("Save Updated Master Data"):
                 save_uploaded_master(uploaded_master)
                 st.cache_data.clear()
-                st.success("Master Data updated for this runtime. For permanent update, replace data/Master_Data.xlsx in GitHub.")
+                st.success("Master Data updated. Please refresh the app.")
 
     st.divider()
     st.header("Audit Reports")
@@ -87,7 +82,7 @@ with st.sidebar:
 
 
 if not MASTER_DATA_PATH.exists():
-    st.info("Please add data/Master_Data.xlsx before generating extraction.")
+    st.info("Please upload or add data/Master_Data.xlsx before generating extraction.")
     st.stop()
 
 master_df, master_sheets = load_master_data(str(MASTER_DATA_PATH))
@@ -117,14 +112,10 @@ if pdf_files:
 
                 result_df, header, items = build_records(pdf_file, master_df)
 
-                if result_df is not None and not result_df.empty:
-                    result_df.insert(1, "Source PDF", pdf_file.name)
-                    all_results.append(result_df)
-                else:
-                    processing_errors.append({
-                        "Source PDF": pdf_file.name,
-                        "Error": "No findings were extracted from this PDF.",
-                    })
+                # Add source file for traceability
+                result_df.insert(1, "Source PDF", pdf_file.name)
+
+                all_results.append(result_df)
 
             except Exception as e:
                 processing_errors.append({
@@ -140,10 +131,7 @@ if pdf_files:
             final_df = pd.concat(all_results, ignore_index=True)
 
             st.subheader("Generated Records")
-            st.caption(
-                f"Generated {len(final_df)} finding row(s) from "
-                f"{len(all_results)} processed PDF file(s)."
-            )
+            st.caption(f"Generated {len(final_df)} finding row(s) from {len(all_results)} processed PDF file(s).")
 
             edited_result = st.data_editor(
                 final_df,

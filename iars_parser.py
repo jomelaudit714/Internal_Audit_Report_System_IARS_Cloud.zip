@@ -326,23 +326,244 @@ def find_issue_title_entries(lines):
     return entries
 
 
+
+def split_finding_cell(finding_text):
+    """Split Audit Findings cell into issue title and narrative.
+
+    Uses the bold/uppercase issue title first, then falls back to known title keywords.
+    Audit activity/auditee name before a real issue title is ignored through normalize_title().
+    """
+    raw = (finding_text or "").replace("\r", "\n")
+    clean_raw = clean_text(raw)
+    if not clean_raw:
+        return "", ""
+
+    upper = clean_raw.upper()
+
+    # Locate actual issue title using priority titles.
+    title_start = 0
+    matched_key = None
+    for key in PRIORITY_TITLES:
+        pos = upper.find(key)
+        if pos >= 0:
+            title_start = pos
+            matched_key = key
+            break
+
+    if matched_key:
+        fragment = clean_raw[title_start:].strip()
+        key_len = len(matched_key)
+
+        # Include amount/percentage immediately after the title, if present.
+        tail = fragment[key_len:]
+        amount_tail = re.match(
+            r"\s*[:–-]\s*\(?\s*(?:₱|P)?\s*[0-9][0-9,]*(?:\.[0-9]+)?%?\s*\)?",
+            tail,
+            flags=re.I,
+        )
+
+        title_end = key_len + (amount_tail.end() if amount_tail else 0)
+        title = fragment[:title_end].strip(" :")
+        narrative = fragment[title_end:].strip()
+        return clean_text(normalize_title(title)), clean_text(narrative)
+
+    # No priority title found: use narrative starters to separate title and body.
+    working = clean_raw
+    narrative_starts = [
+        "Surprise", "During", "Upon", "There ", "Details",
+        "According", "As per", "Ms.", "Mr.", "We requested",
+        "At the commencement", "On June", "All cash",
+    ]
+
+    end_candidates = []
+    for starter in narrative_starts:
+        m = re.search(r"\b" + re.escape(starter) + r"\b", working, flags=re.I)
+        if m and m.start() > 0:
+            end_candidates.append(m.start())
+
+    if end_candidates:
+        title = working[:min(end_candidates)].strip(" :")
+        narrative = working[min(end_candidates):].strip()
+    else:
+        lines = [clean_text(x) for x in raw.split("\n") if clean_text(x)]
+        title_lines = []
+        body_lines = []
+        mode = "title"
+        for line in lines:
+            low = line.lower()
+            if mode == "title":
+                if (
+                    (upper_ratio(line) >= 0.85 or any(k in line.upper() for k in TITLE_KEYWORDS))
+                    and not low.startswith(("surprise", "during", "upon", "there ", "according", "as per", "ms.", "mr."))
+                    and len(line) <= 180
+                ):
+                    title_lines.append(line.strip(" :"))
+                    continue
+                mode = "body"
+            body_lines.append(line)
+        title = " ".join(title_lines) if title_lines else lines[0]
+        narrative = " ".join(body_lines) if body_lines else clean_raw.replace(title, "", 1).strip()
+
+    return clean_text(normalize_title(title)), clean_text(narrative)
+
 def normalize_recommendation(rec):
     rec = clean_text(rec).replace("NONE.", "None").strip()
-    rec = re.sub(r"^(?:of|to|the|be|no|not|as)\s+(?=(We recommend|We advise|Please review|Mr\.|Ms\.|The\s))", "", rec, flags=re.I)
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
+
     rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
-    rec = re.sub(r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain)\b", lambda m: m.group(2).capitalize(), rec, flags=re.I)
+
+    # Remove named subject while preserving requested action.
+    action_verbs = r"properly document|return|use|update|review|ensure|avoid|explain|prepare|submit|document|cancel|monitor|reconcile|promptly prepare"
+    if re.match(r"^(Mr\.|Ms\.|Mrs\.)\s+", rec, flags=re.I):
+        m = re.search(rf"\b(?:should\s+|to\s+)?({action_verbs})\b", rec, flags=re.I)
+        if m:
+            rec = rec[m.start(1):]
+
+    rec = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'-]+?\s+(?:should\s+|to\s+)",
+        "",
+        rec,
+        flags=re.I,
+    )
+    rec = re.sub(r"^(The custodian|The employee|The auditee|Management|The responsible personnel)\s+(?:should\s+|to\s+)?", "", rec, flags=re.I)
+
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
 
-    # Clean common right-column spill artifacts from PDF extraction.
-    rec = re.sub(r"\bprevent\s+be\s+discrepancies\b", "prevent discrepancies", rec, flags=re.I)
-    rec = re.sub(r"\b25%\s+not\s+utilization\b", "25% utilization", rec, flags=re.I)
-    rec = re.sub(r"\bfund\s+as\s+depletion\b", "fund depletion", rec, flags=re.I)
+    rec = clean_text(rec)
     return rec[0].upper() + rec[1:] if rec else "None"
+
+def remove_person_lead(text):
+    """Remove leading names/honorifics while preserving the audit thought."""
+    text = clean_text(text)
+
+    # Direct explanations: "Ms. X explained/stated/claimed that ..."
+    text = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'-]+?\s+(claimed|explained|stated|admitted)\s+that\s+",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'-]+?\s+(claimed|explained|stated|admitted)\s+",
+        "",
+        text,
+        flags=re.I,
+    )
+
+    # "According to/As per Ms. X, she..." or "As per Ms. X she..."
+    m = re.match(
+        r"^(According to|As per)\s+(?:(Mr\.|Ms\.|Mrs\.)\s+)?[A-Z][A-Za-zñÑ .'-]+?(?:,\s*|\s+)(he|she|they|the)\b\s*(.*)$",
+        text,
+        flags=re.I,
+    )
+    if m:
+        pronoun = m.group(3)
+        rest = m.group(4)
+        text = clean_text(f"{pronoun} {rest}")
+
+    text = re.sub(r"^The audit noted that\s+", "", text, flags=re.I)
+    text = re.sub(r"^It was noted that\s+", "", text, flags=re.I)
+    text = re.sub(r"^Management explained that\s+", "", text, flags=re.I)
+    return clean_text(text)
+
+def trim_to_sentence(text, max_words=25):
+    """Keep complete sentence when possible; otherwise trim by words."""
+    text = clean_text(text)
+    if not text or text == "None":
+        return "None"
+
+    # Remove exhibit references and extra report marks.
+    text = re.sub(r"\(See Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+
+    # Prefer a complete first sentence if it is not too long.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if sentences:
+        first = clean_text(sentences[0])
+        if 5 <= len(first.split()) <= max_words:
+            return first
+
+    return " ".join(words[:max_words]).rstrip(",;:") + "..."
+
+
+def concise_text(text, field="general", max_words=25):
+    """Make explanation/recommendation/correction concise without changing the intent."""
+    text = clean_text(text)
+    if not text or text == "None":
+        return "None"
+
+    text = remove_person_lead(text)
+
+    # Common explanation cleanup from cash count reports.
+    text = re.sub(r"^this was her personal cash and that she overlooked the receipt", "Personal cash was overlooked and mixed with the fund", text, flags=re.I)
+    text = re.sub(r"^this was his personal cash and that he overlooked the receipt", "Personal cash was overlooked and mixed with the fund", text, flags=re.I)
+    text = re.sub(r"^she stated that she forgot to prepare", "The custodian forgot to prepare", text, flags=re.I)
+    text = re.sub(r"^he stated that he forgot to prepare", "The custodian forgot to prepare", text, flags=re.I)
+    if text:
+        text = text[0].upper() + text[1:]
+
+    if field == "recommendation":
+        # Convert recommendation to direct action while preserving meaning.
+        text = re.sub(r"^(The custodian|The employee|The auditee|Management|The responsible personnel)\s+(?:should\s+|to\s+)?", "", text, flags=re.I)
+        text = re.sub(r"^should\s+", "", text, flags=re.I)
+        text = re.sub(r"^to\s+", "", text, flags=re.I)
+        return trim_to_sentence(text, max_words=max_words)
+
+    if field == "correction":
+        if re.search(r"presented a copy of the request.*consolidation", text, flags=re.I):
+            return "Request for fund consolidation was presented for approval."
+        return trim_to_sentence(text, max_words=max_words)
+
+    if field == "explanation":
+        return trim_to_sentence(text, max_words=max_words)
+
+    return trim_to_sentence(text, max_words=max_words)
+
+
+def split_recommendation_fields(recommendation):
+    """Split recommendation into primary action and secondary/preventive action when present."""
+    recommendation = clean_text(recommendation)
+    if not recommendation or recommendation == "None":
+        return "None", "None"
+
+    # Strong split markers used in actual audit reports.
+    markers = [
+        r"\bAlso,\s+",
+        r"\bIn addition,\s+",
+        r"\bFurther,\s+",
+        r"\bFurthermore,\s+",
+        r"\bMoreover,\s+",
+    ]
+
+    for marker in markers:
+        m = re.search(marker, recommendation, flags=re.I)
+        if m:
+            first = recommendation[:m.start()].strip(" .;")
+            second = recommendation[m.end():].strip(" .;")
+            return (
+                concise_text(first, "recommendation", 24),
+                concise_text(second, "recommendation", 24),
+            )
+
+    # If multiple sentences and the second is an action/preventive recommendation, split it.
+    sentences = [clean_text(s) for s in re.split(r"(?<=[.!?])\s+", recommendation) if clean_text(s)]
+    if len(sentences) >= 2:
+        second_lower = sentences[1].lower()
+        if any(k in second_lower for k in ["ensure", "review", "monitor", "reconcile", "update", "avoid", "maintain", "submit"]):
+            return (
+                concise_text(sentences[0], "recommendation", 24),
+                concise_text(" ".join(sentences[1:]), "recommendation", 24),
+            )
+
+    return concise_text(recommendation, "recommendation", 28), "None"
 
 
 def remove_action_taken(text):
@@ -429,8 +650,9 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
         return "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8"
 
     if any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage"]):
+        # Evaluate immateriality first before assigning actual overage category.
         if amount is not None and amount < 1000:
-            return "Cash/Fund/Collection Overage (below ₱1,000.00) -2"
+            return "Immaterial Findings 3"
         return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
 
     if is_estancia and any(k in combined for k in ["policy", "procedure", "proper procedure", "guidelines", "sop", "required", "must", "cash voucher"]):
@@ -561,134 +783,115 @@ def remove_title_from_segment(segment, title):
 
 
 def extract_finding_rows_from_pdf(pdf_file):
-    """
-    Hybrid parser:
-    - Uses PDF coordinates to keep Audit Findings (left column) separate from Recommendation (right column).
-    - Uses bold/title-like lines in the left column as the issue title.
-    - Does not rely on issue numbers because some PDFs do not extract the issue number as text.
+    """Extract finding rows using PDF tables first, with text fallback.
+
+    This preserves the stable behavior:
+    - Issue Detail Issue = exact issue title/bold header
+    - Recommendation = recommendation column/text only
     """
     rows = []
     pdf_file.seek(0)
 
-    line_rows = []
-    x_cut = 395
-
     with pdfplumber.open(pdf_file) as pdf:
-        for page_no, page in enumerate(pdf.pages, 1):
-            words = page.extract_words(x_tolerance=2, y_tolerance=3, keep_blank_chars=False) or []
-            grouped = {}
-            for w in words:
-                key = round(w.get("doctop", w["top"]) / 3) * 3
-                grouped.setdefault(key, []).append(w)
+        for page in pdf.pages:
+            for table in page.extract_tables() or []:
+                for row in table:
+                    if not row:
+                        continue
 
-            for key in sorted(grouped):
-                ws = sorted(grouped[key], key=lambda x: x["x0"])
-                left_words = [w for w in ws if w["x0"] < x_cut]
-                right_words = [w for w in ws if w["x0"] >= x_cut]
+                    cells = [clean_cell_preserve(c) for c in row]
+                    if not any(clean_text(c) for c in cells):
+                        continue
 
-                left = clean_text(" ".join(w["text"] for w in left_words))
-                right = clean_text(" ".join(w["text"] for w in right_words))
-                full = clean_text(" ".join(w["text"] for w in ws))
+                    # Find numbered audit issue row.
+                    issue_no = None
+                    issue_idx = None
+                    for i, c in enumerate(cells):
+                        if re.fullmatch(r"\d{1,2}\.?", clean_text(c)):
+                            issue_no = clean_text(c).rstrip(".")
+                            issue_idx = i
+                            break
 
-                line_rows.append({
-                    "page": page_no,
-                    "key": key,
-                    "left": left,
-                    "right": right,
-                    "full": full,
-                })
+                    if issue_no is None:
+                        continue
+
+                    # Table layouts seen:
+                    # 5 columns: issue no, blank, blank, audit findings, recommendation
+                    # 3 columns: issue no, audit findings, recommendation
+                    non_empty_after = [c for c in cells[issue_idx + 1:] if clean_text(c)]
+
+                    finding_cell = ""
+                    rec_cell = ""
+
+                    if len(cells) >= 5 and clean_text(cells[-2]):
+                        finding_cell = cells[-2]
+                        rec_cell = cells[-1] if clean_text(cells[-1]) else ""
+                    elif len(cells) >= 3 and clean_text(cells[-2]):
+                        finding_cell = cells[-2]
+                        rec_cell = cells[-1] if clean_text(cells[-1]) else ""
+                    elif len(non_empty_after) >= 2:
+                        finding_cell = non_empty_after[-2]
+                        rec_cell = non_empty_after[-1]
+                    elif len(non_empty_after) == 1:
+                        finding_cell = non_empty_after[0]
+                        rec_cell = ""
+
+                    if not clean_text(finding_cell):
+                        continue
+                    if "Audit Findings" in finding_cell and "Recommendation" in finding_cell:
+                        continue
+
+                    issue_title, narrative = split_finding_cell(finding_cell)
+                    if not clean_text(issue_title):
+                        continue
+
+                    segment = f"{finding_cell}\n{rec_cell}"
+
+                    rows.append({
+                        "issue_no": issue_no,
+                        "issue": issue_title,
+                        "narrative": remove_action_taken(narrative),
+                        "recommendation1": normalize_recommendation(rec_cell),
+                        "recommendation2": "None",
+                        "explanation": extract_explanation_from_narrative(narrative),
+                        "correction": extract_correction_from_text(finding_cell),
+                    })
 
     pdf_file.seek(0)
 
-    # Crop to the audit findings body.
-    start_idx = 0
-    for i, ln in enumerate(line_rows):
-        if re.search(r"No\.\s+Audit Findings\s+Recommendation", ln["full"], re.I):
-            start_idx = i + 1
-            break
-        if clean_text(ln["left"]).lower() == "no.":
-            start_idx = i + 1
-            break
+    if rows:
+        # Sort by actual issue number to preserve report order.
+        try:
+            rows = sorted(rows, key=lambda x: int(x["issue_no"]))
+        except Exception:
+            pass
+        return rows
 
-    end_idx = len(line_rows)
-    for i, ln in enumerate(line_rows[start_idx:], start_idx):
-        if re.search(r"Prepared/Audited by:|Prepared by:|Reviewed by:|Noted by:|^cc:|^EXHIBIT\s+A|^Request for Soft Copy", ln["full"], re.I):
-            end_idx = i
-            break
-
-    body_lines = line_rows[start_idx:end_idx]
-
-    # Detect issue title entries from the LEFT/Audit Findings column.
-    entries = []
-    i = 0
-    while i < len(body_lines):
-        first_title = extract_title_prefix(body_lines[i]["left"])
-        if not first_title:
-            i += 1
-            continue
-
-        start = i
-        title_parts = [first_title]
-        i += 1
-
-        while i < len(body_lines):
-            nxt = extract_title_prefix(body_lines[i]["left"])
-            if nxt:
-                title_parts.append(nxt)
-                i += 1
-            else:
-                break
-
-        entries.append({
-            "start": start,
-            "end_title": i,
-            "title": normalize_title(" ".join(title_parts)),
-        })
+    # Fallback: previous text-based logic if tables are not detected.
+    text = extract_all_text(pdf_file)
+    body = crop_report_body(text)
+    lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
+    entries = find_issue_title_entries(lines)
+    fallback_rows = []
 
     for idx, entry in enumerate(entries):
-        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(body_lines)
-        segment = body_lines[entry["start"]:next_start]
-
-        narrative_lines = []
-        for ln in body_lines[entry["end_title"]:next_start]:
-            left = clean_text(ln["left"])
-            if not left:
-                continue
-            # Remove extracted issue-number artifacts like "1." or "4. consolidate...".
-            left = re.sub(r"^\d{1,2}\.\s*", "", left).strip()
-            if left:
-                narrative_lines.append(left)
-
-        right_lines = []
-        right_noise = {"of", "to", "the", "be", "no", "not", "as"}
-        for ln in segment:
-            rtxt = clean_text(ln["right"])
-            if not rtxt:
-                continue
-            if rtxt.lower() in right_noise:
-                continue
-            right_lines.append(rtxt)
-
+        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
+        segment_lines = lines[entry["start"]:next_start]
+        segment = "\n".join(segment_lines)
         issue_title = entry["title"]
-        narrative = "\n".join(narrative_lines)
-        recommendation_raw = "\n".join(right_lines)
-        recommendation = normalize_recommendation(recommendation_raw) if recommendation_raw else "None"
+        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
 
-        # If the recommendation column is blank but the left segment has standalone NONE, treat as None.
-        if not recommendation_raw and any(clean_text(ln["left"]).upper() in ["NONE", "NONE."] for ln in segment):
-            recommendation = "None"
-
-        rows.append({
+        fallback_rows.append({
             "issue_no": str(idx + 1),
             "issue": issue_title,
-            "narrative": remove_action_taken(narrative),
-            "recommendation1": recommendation,
+            "narrative": remove_action_taken(narrative_segment),
+            "recommendation1": extract_recommendation_from_segment(segment),
             "recommendation2": "None",
-            "explanation": extract_explanation_from_narrative(narrative),
-            "correction": extract_correction_from_text("\n".join([ln["left"] for ln in segment] + [ln["right"] for ln in segment])),
+            "explanation": extract_explanation_from_narrative(narrative_segment),
+            "correction": extract_correction_from_text(segment),
         })
 
-    return rows
+    return fallback_rows
 
 def filter_no_findings_when_other_issues(items):
     # Keep every numbered row. A separate No Findings row can be valid for a specific auditee/activity.
@@ -739,14 +942,24 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         case_status = "No Case/Issue" if ("No Findings" in findings or "Immaterial Findings" in findings) else "Follow-up with HR"
         user = auditor.split()[0] if auditor and auditor != "None" else "None"
 
+        # Keep Issue Detail Issue as the exact captured issue title.
+        issue_detail = item["issue"]
+
+        # Make supporting fields concise while preserving the original audit thought.
+        explanation = concise_text(item.get("explanation", "None"), "explanation", 25)
+        recommendation1, recommendation2 = split_recommendation_fields(item.get("recommendation1", "None"))
+        if item.get("recommendation2") and item.get("recommendation2") != "None":
+            recommendation2 = concise_text(item.get("recommendation2"), "recommendation", 24)
+        correction = concise_text(item.get("correction", "None"), "correction", 22)
+
         rows.append([
             row_no, date.today().isoformat(), audit_type, header["date_reported"],
             header["audit_reference"], emp_id, emp_name, task_id or "None",
             header["scope_date"], header["year"], findings,
-            item["issue"],
-            item["explanation"] or "None", item["recommendation1"] or "None",
-            item["recommendation2"] or "None", auditor or "None", "None",
-            reaction, frequency, item["correction"] or "None", "", case_status,
+            issue_detail,
+            explanation, recommendation1,
+            recommendation2, auditor or "None", "None",
+            reaction, frequency, correction, "", case_status,
             score, improve, net, "Individual", user,
         ])
 
