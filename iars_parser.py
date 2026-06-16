@@ -812,43 +812,67 @@ def match_employee(master_df, auditee):
 
 def extract_finding_rows_from_pdf(pdf_file):
     rows = []
-    text = extract_all_text(pdf_file).replace("\r", "\n")
 
-    # Remove exhibits/signature/footer part
-    cut_markers = [
-        "Prepared/Audited by:",
-        "Prepared by:",
-        "Reviewed by:",
-        "Noted by:",
-        "cc:",
-        "EXHIBIT A",
-        "EXHIBIT B",
-        "Request for Soft Copy"
-    ]
+    pdf_file.seek(0)
 
-    cut_positions = []
-    for marker in cut_markers:
-        pos = text.find(marker)
-        if pos >= 0:
-            cut_positions.append(pos)
+    all_pages_text = []
 
-    if cut_positions:
-        text = text[:min(cut_positions)]
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
+            all_pages_text.append(page_text)
 
-    # Start from first actual issue number
-    first_issue = re.search(r"(?m)^\s*1\.\s*$", text)
-    if first_issue:
-        text = text[first_issue.start():]
+    pdf_file.seek(0)
 
+    text = "\n".join(all_pages_text).replace("\r", "\n")
+
+    # Remove signature / exhibit / irrelevant pages
+    cut_match = re.search(
+        r"\n\s*(Prepared/Audited by:|Prepared by:|Reviewed by:|Noted by:|cc:|EXHIBIT A|EXHIBIT B|Request for Soft Copy)",
+        text,
+        re.I
+    )
+
+    if cut_match:
+        text = text[:cut_match.start()]
+
+    # Start from actual Issue Table, not Objective 1, 2, 3, 4
+    issue_table_match = re.search(
+        r"Issue\s*\n?\s*No\.\s*Audit Findings\s*Recommendation",
+        text,
+        re.I
+    )
+
+    if issue_table_match:
+        text = text[issue_table_match.end():]
+    else:
+        first_actual_issue = re.search(
+            r"(?m)^\s*1\.\s*\n\s*[A-Z][A-Z0-9 ₱P,./:&()–\-]+",
+            text
+        )
+        if first_actual_issue:
+            text = text[first_actual_issue.start():]
+
+    # Find issue number markers: 1. / 2. / 3. / 4.
     matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*$", text))
+
+    # Backup pattern if number and title are close together
+    if not matches:
+        matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*(?=\n)", text))
 
     for idx, m in enumerate(matches):
         issue_no = m.group(1)
+
         start = m.end()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+
         segment = text[start:end].strip()
 
-        lines = [clean_text(x) for x in segment.splitlines() if clean_text(x)]
+        lines = [
+            clean_text(x)
+            for x in segment.splitlines()
+            if clean_text(x)
+        ]
 
         if not lines:
             continue
@@ -856,6 +880,7 @@ def extract_finding_rows_from_pdf(pdf_file):
         title_lines = []
         narrative_lines = []
         rec_lines = []
+
         mode = "title"
 
         for line in lines:
@@ -869,12 +894,28 @@ def extract_finding_rows_from_pdf(pdf_file):
                 continue
 
             if mode == "title":
-                # Bold/title part usually comes first and is uppercase
-                if line.upper() == line and len(line) <= 180:
+                is_title_line = (
+                    line.upper() == line
+                    and len(line) <= 180
+                    and not low.startswith((
+                        "surprise",
+                        "during",
+                        "upon",
+                        "the ",
+                        "there ",
+                        "details",
+                        "according",
+                        "as per",
+                        "ms.",
+                        "mr."
+                    ))
+                )
+
+                if is_title_line:
                     title_lines.append(line.rstrip(":"))
                     continue
-                else:
-                    mode = "narrative"
+
+                mode = "narrative"
 
             if mode == "narrative":
                 narrative_lines.append(line)
