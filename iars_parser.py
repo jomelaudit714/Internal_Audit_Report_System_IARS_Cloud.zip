@@ -282,32 +282,117 @@ def extract_explanation_from_narrative(narrative):
     return "None"
 
 def make_issue_summary(issue, narrative):
-    combined = (issue + " " + narrative).lower()
+    combined = clean_text(issue + " " + narrative).lower()
+    issue_clean = clean_text(issue)
     amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
 
-    if "overage" in combined:
-        if "unrecorded receipt" in combined and amount is not None:
-            return f"Cash overage of ₱{amount:,.2f} due to unrecorded receipt."
-        if amount is not None:
-            return f"Cash overage of ₱{amount:,.2f} was noted."
-        return "Cash overage was noted."
+    # Monetary / cash / stock issues
+    if "cash" in combined or "fund" in combined or "collection" in combined or "sales" in combined:
+        if "overage" in combined:
+            if "unrecorded receipt" in combined and amount is not None:
+                return f"Cash overage of ₱{amount:,.2f} due to unrecorded receipt."
+            if amount is not None:
+                return f"Cash/Fund/Collection overage of ₱{amount:,.2f} was noted."
+            return "Cash/Fund/Collection overage was noted."
 
-    if "shortage" in combined:
-        if amount is not None:
-            return f"Cash shortage of ₱{amount:,.2f} was noted."
-        return "Cash shortage was noted."
+        if "shortage" in combined:
+            if amount is not None:
+                return f"Cash/Fund/Collection shortage of ₱{amount:,.2f} was noted."
+            return "Cash/Fund/Collection shortage was noted."
 
-    if "late preparation" in combined and "pcv" in combined:
-        return "Delayed preparation of PCV."
-    if "outdated monitoring" in combined or "monitoring" in combined:
-        return "Monitoring records were not updated regularly."
+    if "stock" in combined or "inventory" in combined:
+        if "overage" in combined:
+            if amount is not None:
+                return f"Stock/Inventory overage of ₱{amount:,.2f} was noted."
+            return "Stock/Inventory overage was noted."
+
+        if "shortage" in combined:
+            if amount is not None:
+                return f"Stock/Inventory shortage of ₱{amount:,.2f} was noted."
+            return "Stock/Inventory shortage was noted."
+
+    # Specific category summaries
+    if "non-remittance" in combined or "unremitted" in combined or "not remitted" in combined:
+        return "Collection was not remitted within the required period."
+
+    if "delayed deposit" in combined or "late deposit" in combined:
+        return "Deposit of collections or funds was delayed."
+
+    if "late issuance" in combined or "non-issuance" in combined or "no receipt" in combined:
+        return "Receipt was issued late or was not issued."
+
+    if "omission" in combined or "alteration" in combined:
+        return "Document details were omitted or altered."
+
+    if "pcv" in combined:
+        if "late preparation" in combined:
+            return "Delayed preparation of PCV."
+        return "Petty cash voucher documentation issue was noted."
+
+    if "receipt information" in combined or "incomplete receipt" in combined or "incorrect receipt" in combined:
+        return "Receipt information was incomplete or incorrect."
+
+    if "unavailable inventory" in combined or "unreliable inventory" in combined:
+        return "Inventory records were unavailable or unreliable."
+
+    if "missing" in combined and ("document" in combined or "asset" in combined):
+        return "Document or asset was missing."
+
+    if "misused" in combined and ("document" in combined or "asset" in combined):
+        return "Document or asset was misused."
+
+    if "lost" in combined and ("document" in combined or "asset" in combined):
+        return "Document or asset was lost."
+
+    if "unauthorized use" in combined and "asset" in combined:
+        return "Company asset was used without proper authorization."
+
+    if "delivery error" in combined:
+        return "Delivery error was noted."
+
+    if "computation error" in combined:
+        return "Computation error was noted."
+
+    if "reporting error" in combined:
+        return "Reporting error was noted."
+
+    if "uncooperative" in combined:
+        return "Auditee was uncooperative or failed to provide required documents/results."
+
+    if "unethical" in combined:
+        return "Unethical act or behavior was noted."
+
+    if "manipulate" in combined or "deceive" in combined or "defraud" in combined:
+        return "Manipulation, deception, or fraudulent act was noted."
+
+    if "outdated monitoring" in combined or "outdated records" in combined or "outdated recording" in combined:
+        return "Monitoring or records were not updated."
+
+    if "monitoring" in combined:
+        return "Monitoring weakness was noted."
+
     if "mixing" in combined:
         return "Petty cash and revolving fund were maintained under a single record."
-    if "no cash shortage" in combined:
-        return "No cash shortage or overage noted."
-    return "Issue noted during audit review."
 
+    if "policy" in combined or "procedure" in combined or "guideline" in combined or "sop" in combined:
+        return "Nonconformity with written policy, procedure, guideline, or process was noted."
+
+    if "failure to follow" in combined or "failed to follow" in combined:
+        return "Failure to follow instructed procedure was noted."
+
+    if "no cash shortage" in combined or "no findings" in combined:
+        return "No cash shortage, overage, or audit exception was noted."
+
+    if "immaterial" in combined:
+        return "Immaterial finding with minimal impact was noted."
+
+    # Final fallback based on issue title
+    if issue_clean:
+        return f"{issue_clean} was noted."
+
+    return "Issue noted during audit review."
+    
 def classify_finding(issue, recommendation):
     issue_lower = clean_text(issue).lower()
     rec_lower = clean_text(recommendation).lower()
