@@ -450,8 +450,8 @@ def classify_finding(issue, recommendation, narrative=""):
     amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
 
-    is_estancia = "estancia de lorenzo" in company_lower
-    is_petty_cash = "petty cash" in combined or "petty cash" in audit_title_lower
+    is_estancia = "estancia de lorenzo" in combined
+    is_petty_cash = "petty cash" in combined
 
     # Monetary classifications
     if "cash shortage" in issue_lower or "fund shortage" in issue_lower or "collection shortage" in issue_lower:
