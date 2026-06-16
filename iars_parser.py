@@ -415,10 +415,15 @@ def make_issue_summary(issue, narrative):
 
     return "Issue noted during audit review."
     
-def classify_finding(issue, recommendation):
+def classify_finding(issue, recommendation, narrative="", company="", audit_title=""):
     issue_lower = clean_text(issue).lower()
     rec_lower = clean_text(recommendation).lower()
-    combined = f"{issue_lower} {rec_lower}"
+    narrative_lower = clean_text(narrative).lower()
+    company_lower = clean_text(company).lower()
+    audit_title_lower = clean_text(audit_title).lower()
+
+    combined = f"{issue_lower} {narrative_lower} {rec_lower}"
+
     no_finding_patterns = [
         "no cash shortage",
         "no cash overage",
@@ -440,107 +445,95 @@ def classify_finding(issue, recommendation):
     if any(p in combined for p in no_finding_patterns):
         return "No Findings 10"
 
-    amounts = extract_money_amounts(issue)
+    amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
 
-    # 1. No Findings
-    if "no cash shortage" in issue_lower or "no findings" in issue_lower:
-        return "No Findings 10"
+    is_estancia = "estancia de lorenzo" in company_lower
+    is_petty_cash = "petty cash" in combined or "petty cash" in audit_title_lower
 
-    # 2. Monetary findings first
-    if "overage" in issue_lower and any(x in issue_lower for x in ["cash", "fund", "collection", "sales"]):
-        if amount is not None and amount < 1000:
-            return "Immaterial Findings 3"
-        return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
-
-    if "shortage" in issue_lower and any(x in issue_lower for x in ["cash", "fund", "collection", "sales"]):
-        if amount is not None and amount < 1000:
-            return "Immaterial Findings 3"
+    # Monetary classifications
+    if "cash shortage" in issue_lower or "fund shortage" in issue_lower or "collection shortage" in issue_lower:
         if amount is not None and amount < 3000:
             return "Cash/Fund/Collection Shortage (below ₱3,000.00) -4"
         return "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8"
 
-    if "stock overage" in issue_lower:
-        if amount is not None and amount < 3000:
-            return "Stock Overage (below ₱3,000.00) -2"
-        return "Stock Overage (₱3,000.00 and above) -4"
+    if "cash overage" in issue_lower or "fund overage" in issue_lower or "collection overage" in issue_lower:
+        if amount is not None and amount < 1000:
+            return "Cash/Fund/Collection Overage (below ₱1,000.00) -2"
+        return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
 
-    if "stock shortage" in issue_lower:
-        if amount is not None and amount < 3000:
-            return "Stock Shortage (below ₱3,000.00) -4"
-        return "Stock Shortage (₱3,000.00 and above) -8"
-
-    # 3. Specific categories
-    if "non-remittance" in combined or "not remitted" in combined or "unremitted" in combined:
-        if amount is not None and amount < 3000:
-            return "Non-Remittance Of Collection (below ₱3,000.00) -4"
-        return "Non-Remittance Of Collection (₱3,000.00 and above) -8"
-
-    if "delayed deposit" in combined or "late deposit" in combined:
-        return "Delayed Deposits -3"
-
-    if "late issuance of receipt" in combined or "non-issuance of receipt" in combined:
-        return "Late/Non-Issuance Of Receipts -6"
-
-    if "omission" in combined or "alteration" in combined:
-        return "Omission & Alteration Of Details in Documents -7"
-
-    if "unavailable inventory" in combined or "unreliable inventory" in combined:
-        return "Unavailable or Unreliable Inventory Records -6"
-
-    if "missing" in combined and ("document" in combined or "asset" in combined):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
-
-    if "misused" in combined and ("document" in combined or "asset" in combined):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
-
-    if "lost" in combined and ("document" in combined or "asset" in combined):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
-
-    if "unauthorized use" in combined and "asset" in combined:
-        return "Unauthorized Use of Asset(s) -2"
-
-    if "delivery error" in combined or "computation error" in combined or "reporting error" in combined:
-        return "Delivery and/or Computation, Reporting Error(s) -2"
-
-    if "unethical" in combined:
-        return "Unethical Act or Behavior -6"
-
-    if "manipulate" in combined or "deceive" in combined or "defraud" in combined:
-        return "Manipulate To Deceive or Defraud for Personal Gain -10"
-
-    if "uncooperative" in combined:
-        return "Uncooperative or failed to produce documents/results on a reasonable time given -4"
-
-    # 4. Nonconformity vs Best Practice hierarchy
-    policy_keywords = [
-        "nonconformity",
-        "non-compliance",
-        "not following proper procedure",
-        "proper procedure",
-        "policy",
-        "policies",
-        "procedure",
-        "procedures",
-        "guidelines",
-        "sop",
-        "process",
-        "memorandum",
-        "written requirement",
-        "required procedure",
-        "must be followed"
-    ]
-
-    if any(k in combined for k in policy_keywords):
+    # Petty Cash / Estancia stricter rules
+    if is_estancia and any(k in combined for k in [
+        "policy", "procedure", "proper procedure", "guidelines", "sop",
+        "required", "must", "should be supported", "cash voucher"
+    ]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    # 5. Immaterial only if specifically stated and no higher category applies
+    if is_petty_cash and any(k in combined for k in [
+        "reimbursement exceeding", "without stamped paid", "unsupported",
+        "cash voucher", "official receipt", "invoice"
+    ]):
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
+    # Issue title-driven classifications
+    if any(k in issue_lower for k in [
+        "incomplete details", "incomplete receipt", "incorrect receipt",
+        "incomplete cv", "incomplete pcv", "incorrect pcv",
+        "omission", "alteration"
+    ]):
+        if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required"]):
+            return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+        if any(k in combined for k in ["missing", "no signature", "no date", "incorrect date", "no supplier", "no owner"]):
+            return "Omission & Alteration Of Details in Documents -7"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in [
+        "late preparation of pcv", "no preparation of pcv", "uncancelled pcv",
+        "inconsistent using of pcv"
+    ]):
+        if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required"]):
+            return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in [
+        "no document used", "undocumented", "without document"
+    ]):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+
+    if any(k in issue_lower for k in [
+        "inaccurate monitoring", "outdated monitoring", "no daily balancing",
+        "no monitoring", "incomplete monitoring", "delayed recording"
+    ]):
+        if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "proper procedure"]):
+            return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in [
+        "depleted fund", "low fund", "fund depletion"
+    ]):
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in [
+        "mixing of fund", "mixed fund", "personal cash", "outside its purpose"
+    ]):
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    # Policy / procedure override
+    if any(k in combined for k in [
+        "nonconformity", "non-compliance", "not following proper procedure",
+        "policy", "policies", "procedure", "procedures", "guidelines",
+        "sop", "process", "memorandum", "written requirement"
+    ]):
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
+    if "uncooperative" in combined:
+        return "Uncooperative or Failed To Produce Documents/Results Within Reasonable Time -4"
+
     if "immaterial" in combined:
         return "Immaterial Findings 3"
 
-    # 6. Best Practices default/fallback
     return "Ignore or Disregard Office/Operation Best Practices -3"
-
+    
 def detect_reaction(issue, narrative, recommendation):
     text = f"{issue} {narrative} {recommendation}".lower()
 
@@ -743,7 +736,13 @@ def build_records(pdf_file, master_df=None, manual_df=None):
             reaction = clean_text(manual.get("Reaction", "")) or reaction
             frequency = clean_text(manual.get("Frequency", "")) or frequency
 
-        findings = classify_finding(item["issue"], item["recommendation1"])
+        findings = classify_finding(
+            item["issue"],
+            item["recommendation1"],
+            item["narrative"],
+            header.get("company", ""),
+            header.get("audit_title", "")
+        )
         score = parse_score(findings)
 
         if "No Findings" in findings or "Immaterial Findings" in findings:
