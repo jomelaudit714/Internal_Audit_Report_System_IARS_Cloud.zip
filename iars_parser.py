@@ -435,8 +435,8 @@ def classify_finding(issue, recommendation):
     "no findings"
 ]
 
-        if any(p in combined for p in no_finding_patterns):
-        return "No Findings 10"
+if any(p in combined for p in no_finding_patterns):
+    return "No Findings 10"
 
     amounts = extract_money_amounts(issue)
     amount = max(amounts) if amounts else None
