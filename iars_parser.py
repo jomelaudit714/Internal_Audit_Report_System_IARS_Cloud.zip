@@ -308,14 +308,34 @@ def detect_reaction(issue, narrative, recommendation):
 
     return "Do Some Adjustment"
 
-
 def detect_frequency(issue, narrative, recommendation):
     text = f"{issue} {narrative} {recommendation}".lower()
 
-    if "previous audit" in text or "previously noted" in text or "same finding was noted" in text:
-        return "Second Time"
+    prior_count = 0
 
-    return "First Time"
+    prior_count += len(re.findall(r"previous audit", text))
+    prior_count += len(re.findall(r"previously noted", text))
+    prior_count += len(re.findall(r"same finding was noted", text))
+    prior_count += len(re.findall(r"reference no\.", text))
+    prior_count += len(re.findall(r"\b20\d{2}iad\d+\b", text))
+
+    if prior_count <= 0:
+        return "First Time"
+
+    occurrence = prior_count + 1
+
+    if occurrence == 2:
+        return "Second Time"
+    if occurrence == 3:
+        return "Third Time"
+    if occurrence == 4:
+        return "Fourth Time"
+    if occurrence == 5:
+        return "Fifth Time"
+    if occurrence == 6:
+        return "Sixth Time"
+
+    return "Seventh Time"
 
 def parse_score(findings):
     m = re.search(r"(-?\d+)\s*$", findings or "")
