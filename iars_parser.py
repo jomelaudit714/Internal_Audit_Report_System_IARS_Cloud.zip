@@ -152,6 +152,8 @@ def extract_header(text):
     auditee_name = find_after_label(text, "AUDITEE NAME")
     period = find_after_label(text, ["PERIOD DATE", "COVERING PERIOD", "SCOPE DATE"])
     task_id = find_after_label(text, "TASK ID")
+    company = find_after_label(text, ["COMPANY/DEPT.", "COMPANY/DEPT", "COMPANY"])
+    audit_title = find_after_label(text, ["RE"])
 
     scope_date = "None"
     year = "None"
@@ -178,6 +180,8 @@ def extract_header(text):
         "scope_date": scope_date,
         "year": year,
         "task_id": task_id,
+        "company": company,
+        "audit_title": audit_title,
     }
 
 def prepared_by_auditor(text):
