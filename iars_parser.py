@@ -435,14 +435,14 @@ def classify_finding(issue, recommendation):
     "no findings"
 ]
 
-if any(p in combined for p in no_finding_patterns):
+    if any(p in combined for p in no_finding_patterns):
     return "No Findings 10"
 
     amounts = extract_money_amounts(issue)
     amount = max(amounts) if amounts else None
 
     # 1. No Findings
-    if "no cash shortage" in issue_lower or "no findings" in issue_lower:
+        if "no cash shortage" in issue_lower or "no findings" in issue_lower:
         return "No Findings 10"
 
     # 2. Monetary findings first
