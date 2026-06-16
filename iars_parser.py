@@ -814,30 +814,39 @@ def extract_finding_rows_from_pdf(pdf_file):
     rows = []
     text = extract_all_text(pdf_file).replace("\r", "\n")
 
-    # Keep only report body before signatures/exhibits
-    start_match = re.search(r"Issue\s*\n?No\.\s*Audit Findings\s*Recommendation", text, re.I)
-    start = start_match.end() if start_match else 0
+    # Remove exhibits/signature/footer part
+    cut_markers = [
+        "Prepared/Audited by:",
+        "Prepared by:",
+        "Reviewed by:",
+        "Noted by:",
+        "cc:",
+        "EXHIBIT A",
+        "EXHIBIT B",
+        "Request for Soft Copy"
+    ]
 
-    end_match = re.search(
-        r"Prepared/Audited by|Prepared by|Reviewed by|Noted by|cc:|EXHIBIT A|Request for Soft Copy",
-        text[start:],
-        re.I
-    )
-    end = start + end_match.start() if end_match else len(text)
+    cut_positions = []
+    for marker in cut_markers:
+        pos = text.find(marker)
+        if pos >= 0:
+            cut_positions.append(pos)
 
-    body = text[start:end]
-    print("BODY START")
-    print(body[:3000])
-    print("BODY END")
-    
-    # Split by issue number: 1. / 2. / 3. / 4.
-    matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*$", body))
+    if cut_positions:
+        text = text[:min(cut_positions)]
+
+    # Start from first actual issue number
+    first_issue = re.search(r"(?m)^\s*1\.\s*$", text)
+    if first_issue:
+        text = text[first_issue.start():]
+
+    matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*$", text))
 
     for idx, m in enumerate(matches):
         issue_no = m.group(1)
-        seg_start = m.end()
-        seg_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        segment = body[seg_start:seg_end].strip()
+        start = m.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        segment = text[start:end].strip()
 
         lines = [clean_text(x) for x in segment.splitlines() if clean_text(x)]
 
@@ -846,29 +855,28 @@ def extract_finding_rows_from_pdf(pdf_file):
 
         title_lines = []
         narrative_lines = []
-
-        narrative_start_words = (
-            "surprise", "during", "upon", "the ", "there ", "details",
-            "according", "as per", "ms.", "mr.", "we requested", "action taken"
-        )
-
-        recommendation_start_words = (
-            "we recommend", "we advise", "please review", "none"
-        )
+        rec_lines = []
+        mode = "title"
 
         for line in lines:
-            lower = line.lower()
+            low = line.lower()
 
-            if lower.startswith(recommendation_start_words):
-                break
+            if low.startswith(("we recommend", "we advise", "please review", "none")):
+                mode = "recommendation"
 
-            if lower.startswith(narrative_start_words):
-                narrative_lines.append(line)
+            if mode == "recommendation":
+                rec_lines.append(line)
                 continue
 
-            if line.upper() == line and len(line) <= 180:
-                title_lines.append(line.rstrip(":"))
-            else:
+            if mode == "title":
+                # Bold/title part usually comes first and is uppercase
+                if line.upper() == line and len(line) <= 180:
+                    title_lines.append(line.rstrip(":"))
+                    continue
+                else:
+                    mode = "narrative"
+
+            if mode == "narrative":
                 narrative_lines.append(line)
 
         if not title_lines:
@@ -877,29 +885,20 @@ def extract_finding_rows_from_pdf(pdf_file):
 
         issue_title = normalize_title(" ".join(title_lines))
         narrative = "\n".join(narrative_lines)
-
-        # Recommendation
-        rec_text = "None"
-        rec_match = re.search(
-            r"(We recommend.+|We advise.+|Please review.+|NONE\.?)",
-            segment,
-            re.I | re.S
-        )
-        if rec_match:
-            rec_text = normalize_recommendation(rec_match.group(1))
+        recommendation = normalize_recommendation(" ".join(rec_lines)) if rec_lines else "None"
 
         rows.append({
             "issue_no": issue_no,
             "issue": issue_title,
             "narrative": remove_action_taken(narrative),
-            "recommendation1": rec_text,
+            "recommendation1": recommendation,
             "recommendation2": "None",
             "explanation": extract_explanation_from_narrative(narrative),
             "correction": extract_correction_from_text(segment),
         })
 
     return rows
-
+    
 def filter_no_findings_when_other_issues(items):
     actual = []
     no_findings = []
