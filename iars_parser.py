@@ -211,26 +211,88 @@ def extract_money_amounts(value):
     return amounts
 
 def split_title_body(finding_text):
-    lines = [clean_text(x) for x in (finding_text or "").splitlines() if clean_text(x)]
-    title_lines, body_lines = [], []
-    in_title = True
+    lines = [
+        clean_text(x)
+        for x in (finding_text or "").splitlines()
+        if clean_text(x)
+    ]
 
-    for line in lines:
-        norm = line.strip().rstrip(":")
-        has_lower = any(ch.islower() for ch in norm)
-        is_title = (not has_lower) or bool(re.match(r"^(CASH|STOCK|FUND|COLLECTION).*(OVERAGE|SHORTAGE)", norm, re.I))
-        if in_title and is_title:
-            title_lines.append(norm)
+    if not lines:
+        return "", ""
+
+    title_lines = []
+    body_start = 0
+
+    stop_words = (
+        "surprise", "during", "upon", "the ", "there ", "details",
+        "according", "as per", "ms.", "mr.", "we ", "action taken"
+    )
+
+    issue_keywords = [
+        "SHORTAGE", "OVERAGE", "NO CASH", "PCV", "DOCUMENT",
+        "MONITORING", "DEPLETED", "INCOMPLETE", "INCORRECT",
+        "LATE", "UNCANCELLED", "UNREPLENISHED", "UNLIQUIDATED",
+        "OUTSIDE ITS PURPOSE", "MIXING", "FUND"
+    ]
+
+    for i, line in enumerate(lines):
+        u = line.upper().strip()
+
+        # stop when narrative starts
+        if line.lower().startswith(stop_words):
+            body_start = i
+            break
+
+        # title is usually uppercase/bold text
+        is_title = (
+            u == line.strip()
+            and len(u) <= 160
+            and any(k in u for k in issue_keywords)
+        )
+
+        if is_title:
+            title_lines.append(line.strip().rstrip(":"))
+            body_start = i + 1
         else:
-            in_title = False
-            body_lines.append(line)
+            body_start = i
+            break
 
-    if not title_lines and lines:
-        title_lines = [lines[0].rstrip(":")]
-        body_lines = lines[1:]
+    if not title_lines:
+        title_lines = [lines[0].strip().rstrip(":")]
+        body_start = 1
 
-    return clean_text(" ".join(title_lines)), "\n".join(body_lines)
+    issue_title = clean_text(" ".join(title_lines))
+    narrative = "\n".join(lines[body_start:])
 
+    # If title contains activity/auditee name plus actual issue, keep only actual issue.
+    issue_priority = [
+        "NO CASH SHORTAGE/OVERAGE",
+        "NO CASH OVERAGE/SHORTAGE",
+        "NO CASH SHORTAGE OR OVERAGE",
+        "NO CASH OVERAGE OR SHORTAGE",
+        "CASH SHORTAGE",
+        "CASH OVERAGE",
+        "NO PREPARATION OF PCV",
+        "UNCANCELLED PCV",
+        "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND",
+        "INACCURATE MONITORING OF FUND",
+        "DEPLETED FUND",
+        "INCOMPLETE RECEIPT INFORMATION",
+        "INCORRECT RECEIPT INFORMATION",
+        "LATE PREPARATION OF PCV",
+        "INCONSISTENT USING OF PCV",
+        "USE OF CASH ADVANCE OUTSIDE ITS PURPOSE",
+    ]
+
+    upper_title = issue_title.upper()
+
+    for key in issue_priority:
+        if key in upper_title:
+            issue_title = issue_title[upper_title.find(key):]
+            break
+
+    return clean_text(issue_title), narrative
+    
 def normalize_recommendation(rec):
     rec = clean_text(rec).replace("NONE.", "None").strip()
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
