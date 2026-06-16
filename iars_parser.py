@@ -826,7 +826,10 @@ def extract_finding_rows_from_pdf(pdf_file):
     end = start + end_match.start() if end_match else len(text)
 
     body = text[start:end]
-
+    print("BODY START")
+    print(body[:3000])
+    print("BODY END")
+    
     # Split by issue number: 1. / 2. / 3. / 4.
     matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*$", body))
 
