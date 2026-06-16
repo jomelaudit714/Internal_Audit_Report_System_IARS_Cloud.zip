@@ -471,23 +471,22 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         manual = manual_map.get(item["issue_no"])
         task_id = header["task_id"]
         auditor = auditor_default
-        reaction = detect_reaction(
-    item["issue"],
-    item["narrative"],
-    item["recommendation1"]
-)
+            reaction = detect_reaction(
+            item["issue"],
+            item["narrative"],
+            item["recommendation1"]
+        )
 
-frequency = detect_frequency(
-    item["issue"],
-    item["narrative"],
-    item["recommendation1"]
-)
-
+        frequency = detect_frequency(
+            item["issue"],
+            item["narrative"],
+            item["recommendation1"]
+        )
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
             auditor = clean_text(manual.get("Auditor", "")) or auditor
-            reaction = clean_text(manual.get("Reaction", ""))
-            frequency = clean_text(manual.get("Frequency", ""))
+            reaction = clean_text(manual.get("Reaction", "")) or reaction
+            frequency = clean_text(manual.get("Frequency", "")) or frequency
 
         findings = classify_finding(item["issue"], item["recommendation1"])
         score = parse_score(findings)
