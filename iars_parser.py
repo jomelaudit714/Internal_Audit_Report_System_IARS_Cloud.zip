@@ -1,11 +1,8 @@
-
 import re
 from datetime import date
 from io import BytesIO
-
 import pandas as pd
 import pdfplumber
-
 
 HEADERS = [
     "#", "Encoded Date", "Type", "Date Reported", "Audit Reference", "ID No", "Name",
@@ -16,15 +13,9 @@ HEADERS = [
 ]
 
 AUDITORS = [
-    "Noel Buena",
-    "Jomel Santiago",
-    "Trece Generato Jr.",
-    "Antonio P. Bides",
-    "Jed Laserna",
-    "Cris Canonoy",
-    "Joshua Christopher Catis",
-    "Sarina Amuraw",
-    "Patricia Anne Del Rosario",
+    "Noel Buena", "Jomel Santiago", "Trece Generato Jr.", "Antonio P. Bides",
+    "Jed Laserna", "Cris Canonoy", "Joshua Christopher Catis",
+    "Sarina Amuraw", "Patricia Anne Del Rosario",
 ]
 
 FINDINGS_DROPDOWN = [
@@ -71,29 +62,15 @@ FINDINGS_DROPDOWN = [
 ]
 
 REACTION_OPTIONS = [
-    "",
-    "Complied with previous recommendation",
-    "Established guidelines",
-    "Acknowledged the issue & will do correction",
-    "Maintaining Status Quo",
-    "Performed SAME offense",
-    "Diverted the issue",
-    "Low priority",
-    "Undertake unfavorable approach",
-    "Uncooperative",
-    "Do Some Adjustment",
+    "", "Complied with previous recommendation", "Established guidelines",
+    "Acknowledged the issue & will do correction", "Maintaining Status Quo",
+    "Performed SAME offense", "Diverted the issue", "Low priority",
+    "Undertake unfavorable approach", "Uncooperative", "Do Some Adjustment",
 ]
 
 FREQUENCY_OPTIONS = [
-    "",
-    "Not Applicable",
-    "First Time",
-    "Second Time",
-    "Third Time",
-    "Fourth Time",
-    "Fifth Time",
-    "Sixth Time",
-    "Seventh Time",
+    "", "Not Applicable", "First Time", "Second Time", "Third Time", "Fourth Time",
+    "Fifth Time", "Sixth Time", "Seventh Time",
 ]
 
 RESPONSE_RATE = {
@@ -124,6 +101,49 @@ FREQUENCY_RATE = {
     "None": 1,
 }
 
+TITLE_KEYWORDS = [
+    "SHORTAGE", "OVERAGE", "NO CASH", "PCV", "DOCUMENT", "MONITORING",
+    "DEPLETED", "INCOMPLETE", "INCORRECT", "LATE", "UNCANCELLED",
+    "UNREPLENISHED", "UNLIQUIDATED", "OUTSIDE ITS PURPOSE", "MIXING",
+    "FUND", "DAILY BALANCING", "RECEIPT INFORMATION", "CASH ADVANCE",
+    "CASH ADVANCES", "UNSUPPORTED", "BALANCING",
+]
+
+PRIORITY_TITLES = [
+    "NO CASH SHORTAGE/OVERAGE",
+    "NO CASH OVERAGE/SHORTAGE",
+    "NO CASH SHORTAGE OR OVERAGE",
+    "NO CASH OVERAGE OR SHORTAGE",
+    "CASH SHORTAGE",
+    "CASH OVERAGE",
+    "NO PREPARATION OF PCV",
+    "UNCANCELLED PCV",
+    "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND",
+    "INACCURATE MONITORING OF FUND",
+    "OUTDATED MONITORING",
+    "DEPLETED FUND",
+    "INCOMPLETE RECEIPT INFORMATION",
+    "INCORRECT RECEIPT INFORMATION",
+    "LATE PREPARATION OF PCV",
+    "INCONSISTENT USING OF PCV",
+    "USE OF CASH ADVANCE OUTSIDE ITS PURPOSE",
+    "INCOMPLETE DETAILS IN PCV",
+    "INACCURATE PCV INFORMATION",
+    "NO DAILY BALANCING / MONITORING OF FUND",
+    "MIXING OF FUND WITH PERSONAL CASH OF CUSTODIAN",
+    "MIXING OF PETTY CASH AND REVOLVING FUND",
+]
+
+NO_FINDING_PATTERNS = [
+    "no cash shortage", "no cash overage", "no cash shortage/overage",
+    "no cash overage/shortage", "no cash shortage or overage",
+    "no cash overage or shortage", "no shortage/overage", "no overage/shortage",
+    "no shortage or overage", "no overage or shortage", "fund is intact",
+    "cash fund is intact", "revolving fund is intact", "petty cash fund is intact",
+    "no variance noted", "no discrepancy noted", "cash count tallied",
+    "cash count matched", "cash counted matched", "no findings",
+]
+
 
 def clean_text(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -139,23 +159,19 @@ def clean_cell_preserve(value):
 def find_after_label(text, labels):
     if isinstance(labels, str):
         labels = [labels]
-
     for label in labels:
         m = re.search(rf"{re.escape(label)}\s*[:\-]\s*([^\n\r]+)", text or "", re.I)
         if m:
             return clean_text(m.group(1))
-
     return "None"
 
 
 def extract_all_text(pdf_file):
     pdf_file.seek(0)
-
     with pdfplumber.open(pdf_file) as pdf:
         text = "\n".join((page.extract_text() or "") for page in pdf.pages)
-
     pdf_file.seek(0)
-    return text
+    return text.replace("\r", "\n")
 
 
 def extract_header(text):
@@ -165,14 +181,11 @@ def extract_header(text):
     period = find_after_label(text, ["PERIOD DATE", "COVERING PERIOD", "SCOPE DATE"])
     company = find_after_label(text, ["COMPANY/DEPT.", "COMPANY/DEPT", "COMPANY"])
     audit_title = find_after_label(text, ["RE"])
-
     task_id = find_after_label(text, "TASK ID")
 
     scope_date = "None"
     year = "None"
-
     dates = re.findall(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", period)
-
     if len(dates) >= 2:
         start, end = dates[0], dates[-1]
         scope_date = f"{start[0]} {start[1]} to {end[0]} {end[1]},"
@@ -204,167 +217,126 @@ def prepared_by_auditor(text):
     m = re.search(
         r"Prepared(?:/Audited)? by\s*:\s*(.+?)(?:Reviewed by|Noted by|cc:|Audit/file|$)",
         text,
-        re.I | re.S
+        re.I | re.S,
     )
-
     area = (m.group(1) if m else "").upper()
-
     candidates = []
-
     for auditor in AUDITORS:
-        words = [
-            w for w in re.sub(r"[^A-Za-z ]", " ", auditor).upper().split()
-            if len(w) > 2
-        ]
-
+        words = [w for w in re.sub(r"[^A-Za-z ]", " ", auditor).upper().split() if len(w) > 2]
         if words and words[0] in area and words[-1] in area:
             candidates.append((area.find(words[0]), auditor))
-
-    if candidates:
-        return sorted(candidates)[0][1]
-
-    return "None"
+    return sorted(candidates)[0][1] if candidates else "None"
 
 
 def extract_money_amounts(value):
     amounts = []
-
-    for m in re.finditer(
-        r"(?:₱|P)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2}))",
-        value or "",
-        re.I
-    ):
+    for m in re.finditer(r"(?:₱|P)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2}))", value or "", re.I):
         try:
             amounts.append(float(m.group(1).replace(",", "")))
         except Exception:
             pass
-
     return amounts
+
+
+def upper_ratio(text):
+    letters = [c for c in clean_text(text) if c.isalpha()]
+    if not letters:
+        return 0
+    return sum(1 for c in letters if c.isupper()) / len(letters)
 
 
 def normalize_title(issue_title):
     title = clean_text(issue_title).strip().strip(":")
     upper = title.upper()
-
-    activity_terms = [
-        "cash advances",
-        "cash advance",
-        "revolving fund",
-        "petty cash fund",
-        "change fund",
-        "daily sales",
-        "cash sales and collection",
-        "delivery fund",
-    ]
-
-    priority_titles = [
-        "NO CASH SHORTAGE/OVERAGE",
-        "NO CASH OVERAGE/SHORTAGE",
-        "NO CASH SHORTAGE OR OVERAGE",
-        "NO CASH OVERAGE OR SHORTAGE",
-        "CASH SHORTAGE",
-        "CASH OVERAGE",
-        "NO PREPARATION OF PCV",
-        "UNCANCELLED PCV",
-        "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND",
-        "INACCURATE MONITORING OF FUND",
-        "DEPLETED FUND",
-        "INCOMPLETE RECEIPT INFORMATION",
-        "INCORRECT RECEIPT INFORMATION",
-        "LATE PREPARATION OF PCV",
-        "INCONSISTENT USING OF PCV",
-        "USE OF CASH ADVANCE OUTSIDE ITS PURPOSE",
-        "INCOMPLETE DETAILS IN PCV",
-        "INACCURATE PCV INFORMATION",
-        "NO DAILY BALANCING / MONITORING OF FUND",
-        "MIXING OF FUND WITH PERSONAL CASH OF CUSTODIAN",
-    ]
-
-    for key in priority_titles:
+    for key in PRIORITY_TITLES:
         if key in upper:
-            idx = upper.find(key)
-            return clean_text(title[idx:])
-
+            return clean_text(title[upper.find(key):])
     return title
 
 
-def split_title_body(finding_text):
-    lines = [
-        clean_text(x)
-        for x in (finding_text or "").replace("\r", "\n").splitlines()
-        if clean_text(x)
-    ]
+def extract_title_prefix(line):
+    """Return the bold/title text at the beginning of a PDF line, before recommendation text if merged."""
+    s = clean_text(line).strip().strip(":")
+    if not s:
+        return ""
 
-    if not lines:
-        return "", ""
+    m = re.search(r"\s+(?:We recommend|We advise|Please review|NONE\.?)\b", s, re.I)
+    prefix = s[:m.start()].strip().rstrip(":") if m else s
 
-    title_lines = []
-    body_start = 0
+    if len(prefix) > 180:
+        return ""
+    if upper_ratio(prefix) < 0.85:
+        return ""
+    if not any(k in prefix.upper() for k in TITLE_KEYWORDS):
+        return ""
+    if prefix.upper() in ["ISSUE", "NO", "NO.", "AUDIT FINDINGS", "RECOMMENDATION"]:
+        return ""
+    return prefix
 
-    narrative_starts = (
-        "surprise", "during", "upon", "the ", "there ", "details",
-        "according", "as per", "ms.", "mr.", "we ", "action taken"
-    )
 
-    title_keywords = [
-        "SHORTAGE", "OVERAGE", "NO CASH", "PCV", "DOCUMENT",
-        "MONITORING", "DEPLETED", "INCOMPLETE", "INCORRECT",
-        "LATE", "UNCANCELLED", "UNREPLENISHED", "UNLIQUIDATED",
-        "OUTSIDE ITS PURPOSE", "MIXING", "FUND", "DAILY BALANCING",
-        "RECEIPT INFORMATION", "CASH ADVANCE"
-    ]
+def crop_report_body(text):
+    m = re.search(r"Issue\s*\n(?:.*\n){0,5}?No\.", text, re.I)
+    if m:
+        text = text[m.end():]
 
-    for i, line in enumerate(lines):
-        u = line.upper().strip()
+    cut_positions = []
+    for pat in [
+        r"\n\s*Prepared/Audited by:",
+        r"\n\s*Prepared by:",
+        r"\n\s*Reviewed by:",
+        r"\n\s*Noted by:",
+        r"\n\s*cc:",
+        r"\n\s*EXHIBIT\s+A",
+        r"\n\s*Request for Soft Copy",
+    ]:
+        cm = re.search(pat, text, re.I)
+        if cm:
+            cut_positions.append(cm.start())
+    if cut_positions:
+        text = text[:min(cut_positions)]
+    return text
 
-        if line.lower().startswith(narrative_starts):
-            body_start = i
-            break
 
-        is_upper = u == line.strip()
-        has_keyword = any(k in u for k in title_keywords)
+def find_issue_title_entries(lines):
+    entries = []
+    i = 0
+    while i < len(lines):
+        first_title = extract_title_prefix(lines[i])
+        if not first_title:
+            i += 1
+            continue
 
-        if is_upper and has_keyword and len(u) <= 180:
-            title_lines.append(line.rstrip(":"))
-            body_start = i + 1
-        else:
-            body_start = i
-            break
+        start_i = i
+        title_parts = [first_title]
+        i += 1
 
-    if not title_lines:
-        title_lines = [lines[0].rstrip(":")]
-        body_start = 1
+        while i < len(lines):
+            next_title = extract_title_prefix(lines[i])
+            if next_title:
+                title_parts.append(next_title)
+                i += 1
+            else:
+                break
 
-    issue_title = normalize_title(" ".join(title_lines))
-    narrative = "\n".join(lines[body_start:])
-
-    return issue_title, narrative
+        entries.append({
+            "start": start_i,
+            "end_title": i,
+            "title": normalize_title(" ".join(title_parts)),
+        })
+    return entries
 
 
 def normalize_recommendation(rec):
     rec = clean_text(rec).replace("NONE.", "None").strip()
-
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
-
     rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
-
-    rec = re.sub(
-        r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain)\b",
-        lambda m: m.group(2).capitalize(),
-        rec,
-        flags=re.I
-    )
-
+    rec = re.sub(r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain)\b", lambda m: m.group(2).capitalize(), rec, flags=re.I)
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
-
-    if rec:
-        rec = rec[0].upper() + rec[1:]
-
-    return rec
+    return rec[0].upper() + rec[1:] if rec else "None"
 
 
 def remove_action_taken(text):
@@ -373,173 +345,58 @@ def remove_action_taken(text):
 
 def extract_correction_from_text(text):
     m = re.search(r"Action Taken\s*:\s*(.+)", text or "", re.I | re.S)
-
     if not m:
         return "None"
-
     val = clean_text(m.group(1))
     val = re.sub(r"\bPrepared(?:/Audited)? by:.*", "", val, flags=re.I | re.S)
     val = clean_text(val)
-
-    if not val or val.upper() in ["NONE", "N/A", "NO ACTION TAKEN"]:
-        return "None"
-
-    return val
+    return "None" if not val or val.upper() in ["NONE", "N/A", "NO ACTION TAKEN"] else val
 
 
 def extract_explanation_from_narrative(narrative):
     text = clean_text(remove_action_taken(narrative))
     text = re.sub(r"\(See Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
-
     patterns = [
         r"((?:Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated|admitted)\s+.+)",
         r"((?:According to|As per)\s+.+)",
         r"((?:He|She|They)\s+(?:claimed|explained|stated|admitted)\s+.+)",
     ]
-
     for pat in patterns:
         m = re.search(pat, text, re.I)
         if m:
             return clean_text(m.group(1))
-
     return "None"
 
 
 def make_issue_summary(issue, narrative):
     combined = clean_text(issue + " " + narrative).lower()
     issue_clean = clean_text(issue)
-
-    no_finding_patterns = [
-        "no cash shortage",
-        "no cash overage",
-        "no cash shortage/overage",
-        "no cash overage/shortage",
-        "no cash shortage or overage",
-        "no cash overage or shortage",
-        "no shortage/overage",
-        "no overage/shortage",
-        "no shortage or overage",
-        "no overage or shortage",
-        "fund is intact",
-        "cash fund is intact",
-        "revolving fund is intact",
-        "petty cash fund is intact",
-        "no variance noted",
-        "no discrepancy noted",
-        "cash count tallied",
-        "cash count matched",
-        "cash counted matched",
-        "no findings"
-    ]
-
-    if any(p in combined for p in no_finding_patterns):
+    if any(p in combined for p in NO_FINDING_PATTERNS):
         return "No cash shortage or overage was noted."
 
     amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
 
-    if "cash" in combined or "fund" in combined or "collection" in combined or "sales" in combined:
+    if any(x in combined for x in ["cash", "fund", "collection", "sales"]):
         if "overage" in issue.lower():
-            if "unrecorded receipt" in combined and amount is not None:
-                return f"Cash overage of ₱{amount:,.2f} due to unrecorded receipt."
-            if amount is not None:
-                return f"Cash/Fund/Collection overage of ₱{amount:,.2f} was noted."
-            return "Cash/Fund/Collection overage was noted."
-
+            return f"Cash/Fund/Collection overage of ₱{amount:,.2f} was noted." if amount else "Cash/Fund/Collection overage was noted."
         if "shortage" in issue.lower():
-            if amount is not None:
-                return f"Cash/Fund/Collection shortage of ₱{amount:,.2f} was noted."
-            return "Cash/Fund/Collection shortage was noted."
-
-    if "stock" in combined or "inventory" in combined:
-        if "overage" in issue.lower():
-            return f"Stock/Inventory overage of ₱{amount:,.2f} was noted." if amount else "Stock/Inventory overage was noted."
-
-        if "shortage" in issue.lower():
-            return f"Stock/Inventory shortage of ₱{amount:,.2f} was noted." if amount else "Stock/Inventory shortage was noted."
-
-    if "non-remittance" in combined or "unremitted" in combined or "not remitted" in combined:
-        return "Collection was not remitted within the required period."
-
-    if "delayed deposit" in combined or "late deposit" in combined:
-        return "Deposit of collections or funds was delayed."
-
-    if "late issuance" in combined or "non-issuance" in combined or "no receipt" in combined:
-        return "Receipt was issued late or was not issued."
-
-    if "omission" in combined or "alteration" in combined:
-        return "Document details were omitted or altered."
-
-    if "pcv" in combined:
-        if "late preparation" in combined:
-            return "Delayed preparation of PCV."
-        if "no preparation" in combined:
-            return "No PCV was prepared."
-        if "uncancelled" in combined:
-            return "Uncancelled PCV was noted."
-        return "Petty cash voucher documentation issue was noted."
-
-    if "receipt information" in combined or "incomplete receipt" in combined or "incorrect receipt" in combined:
-        return "Receipt information was incomplete or incorrect."
-
-    if "unavailable inventory" in combined or "unreliable inventory" in combined:
-        return "Inventory records were unavailable or unreliable."
-
-    if "missing" in combined and ("document" in combined or "asset" in combined):
-        return "Document or asset was missing."
-
-    if "misused" in combined and ("document" in combined or "asset" in combined):
-        return "Document or asset was misused."
-
-    if "lost" in combined and ("document" in combined or "asset" in combined):
-        return "Document or asset was lost."
-
-    if "unauthorized use" in combined and "asset" in combined:
-        return "Company asset was used without proper authorization."
-
-    if "delivery error" in combined:
-        return "Delivery error was noted."
-
-    if "computation error" in combined:
-        return "Computation error was noted."
-
-    if "reporting error" in combined:
-        return "Reporting error was noted."
-
-    if "uncooperative" in combined:
-        return "Auditee was uncooperative or failed to provide required documents/results."
-
-    if "unethical" in combined:
-        return "Unethical act or behavior was noted."
-
-    if "manipulate" in combined or "deceive" in combined or "defraud" in combined:
-        return "Manipulation, deception, or fraudulent act was noted."
-
-    if "outdated monitoring" in combined or "outdated records" in combined or "outdated recording" in combined:
-        return "Monitoring or records were not updated."
-
-    if "monitoring" in combined:
-        return "Monitoring weakness was noted."
-
-    if "mixing" in combined:
-        return "Petty cash and revolving fund were maintained under a single record."
-
+            return f"Cash/Fund/Collection shortage of ₱{amount:,.2f} was noted." if amount else "Cash/Fund/Collection shortage was noted."
+    if "no preparation" in combined and "pcv" in combined:
+        return "No PCV was prepared."
+    if "late preparation" in combined and "pcv" in combined:
+        return "Delayed preparation of PCV."
+    if "uncancelled" in combined and "pcv" in combined:
+        return "Uncancelled PCV was noted."
+    if "no document used" in combined or "undocumented" in combined:
+        return "Cash transaction was not properly documented."
+    if "inaccurate monitoring" in combined or "outdated monitoring" in combined:
+        return "Monitoring records were inaccurate or not updated."
     if "depleted fund" in combined:
         return "Fund was depleted below the expected utilization level."
-
-    if "policy" in combined or "procedure" in combined or "guideline" in combined or "sop" in combined:
-        return "Nonconformity with written policy, procedure, guideline, or process was noted."
-
-    if "failure to follow" in combined or "failed to follow" in combined:
-        return "Failure to follow instructed procedure was noted."
-
-    if "immaterial" in combined:
-        return "Immaterial finding with minimal impact was noted."
-
-    if issue_clean:
-        return f"{issue_clean} was noted."
-
-    return "Issue noted during audit review."
+    if "mixing" in combined:
+        return "Petty cash and revolving fund were maintained under a single record."
+    return f"{issue_clean} was noted." if issue_clean else "Issue noted during audit review."
 
 
 def classify_finding(issue, recommendation, narrative="", company="", audit_title=""):
@@ -548,33 +405,13 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
     narrative_lower = clean_text(narrative).lower()
     company_lower = clean_text(company).lower()
     audit_title_lower = clean_text(audit_title).lower()
-
     combined = f"{issue_lower} {narrative_lower} {rec_lower}"
 
-    no_finding_patterns = [
-        "no cash shortage",
-        "no cash overage",
-        "no cash shortage/overage",
-        "no cash overage/shortage",
-        "no cash shortage or overage",
-        "no cash overage or shortage",
-        "no shortage/overage",
-        "no overage/shortage",
-        "fund is intact",
-        "cash count tallied",
-        "cash count matched",
-        "cash counted matched",
-        "no discrepancy noted",
-        "no variance noted",
-        "no findings"
-    ]
-
-    if any(p in combined for p in no_finding_patterns):
+    if any(p in combined for p in NO_FINDING_PATTERNS):
         return "No Findings 10"
 
     amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
-
     is_estancia = "estancia de lorenzo" in company_lower
     is_petty_cash = "petty cash" in combined or "petty cash" in audit_title_lower
 
@@ -590,167 +427,71 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
             return "Cash/Fund/Collection Overage (below ₱1,000.00) -2"
         return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
 
-    if "stock overage" in issue_lower:
-        if amount is not None and amount < 3000:
-            return "Stock Overage (below ₱3,000.00) -2"
-        return "Stock Overage (₱3,000.00 and above) -4"
-
-    if "stock shortage" in issue_lower:
-        if amount is not None and amount < 3000:
-            return "Stock Shortage (below ₱3,000.00) -4"
-        return "Stock Shortage (₱3,000.00 and above) -8"
-
-    if is_estancia and any(k in combined for k in [
-        "policy", "procedure", "proper procedure", "guidelines", "sop",
-        "required", "must", "should be supported", "cash voucher"
-    ]):
+    if is_estancia and any(k in combined for k in ["policy", "procedure", "proper procedure", "guidelines", "sop", "required", "must", "cash voucher"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    if is_petty_cash and any(k in combined for k in [
-        "reimbursement exceeding", "without stamped paid", "unsupported",
-        "cash voucher", "official receipt", "invoice"
-    ]):
+    if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported", "cash voucher", "official receipt", "invoice"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    if any(k in issue_lower for k in [
-        "incomplete details", "incomplete receipt", "incorrect receipt",
-        "incomplete cv", "incomplete pcv", "incorrect pcv",
-        "omission", "alteration"
-    ]):
+    if any(k in issue_lower for k in ["incomplete details", "incomplete receipt", "incorrect receipt", "incomplete cv", "incomplete pcv", "incorrect pcv", "omission", "alteration"]):
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required"]):
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
-
         if any(k in combined for k in ["missing", "no signature", "no date", "incorrect date", "no supplier", "no owner"]):
             return "Omission & Alteration Of Details in Documents -7"
-
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
-    if any(k in issue_lower for k in [
-        "late preparation of pcv", "no preparation of pcv", "uncancelled pcv",
-        "inconsistent using of pcv"
-    ]):
+    if any(k in issue_lower for k in ["late preparation of pcv", "no preparation of pcv", "uncancelled pcv", "inconsistent using of pcv"]):
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required"]):
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
-
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
     if any(k in issue_lower for k in ["no document used", "undocumented", "without document"]):
         return "Missing, Misused or Lost Of Documents/Asset(s) -3"
 
-    if any(k in issue_lower for k in [
-        "inaccurate monitoring", "outdated monitoring", "no daily balancing",
-        "no monitoring", "incomplete monitoring", "delayed recording"
-    ]):
+    if any(k in issue_lower for k in ["inaccurate monitoring", "outdated monitoring", "no daily balancing", "no monitoring", "incomplete monitoring", "delayed recording"]):
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "proper procedure"]):
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
-
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
-    if any(k in issue_lower for k in ["depleted fund", "low fund", "fund depletion"]):
+    if any(k in issue_lower for k in ["depleted fund", "low fund", "fund depletion", "mixing of fund", "mixed fund", "personal cash", "outside its purpose"]):
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
-    if any(k in issue_lower for k in ["mixing of fund", "mixed fund", "personal cash", "outside its purpose"]):
-        return "Ignore or Disregard Office/Operation Best Practices -3"
-
-    if "non-remittance" in combined or "not remitted" in combined or "unremitted" in combined:
-        if amount is not None and amount < 3000:
-            return "Non-Remittance Of Collection (below ₱3,000.00) -4"
-        return "Non-Remittance Of Collection (₱3,000.00 and above) -8"
-
-    if "delayed deposit" in combined or "late deposit" in combined:
-        return "Delayed Deposits -3"
-
-    if "late issuance of receipt" in combined or "non-issuance of receipt" in combined:
-        return "Late/Non-Issuance Of Receipts -6"
-
-    if "unavailable inventory" in combined or "unreliable inventory" in combined:
-        return "Unavailable or Unreliable Inventory Records -6"
-
-    if "missing" in combined and ("document" in combined or "asset" in combined):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
-
-    if "misused" in combined and ("document" in combined or "asset" in combined):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
-
-    if "lost" in combined and ("document" in combined or "asset" in combined):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
-
-    if "unauthorized use" in combined and "asset" in combined:
-        return "Unauthorized Use of Asset(s) -2"
-
-    if "delivery error" in combined or "computation error" in combined or "reporting error" in combined:
-        return "Delivery and/or Computation, Reporting Error(s) -2"
-
-    if "unethical" in combined:
-        return "Unethical Act or Behavior -6"
-
-    if "manipulate" in combined or "deceive" in combined or "defraud" in combined:
-        return "Manipulate To Deceive or Defraud For Personal Gain -10"
+    if any(k in combined for k in ["nonconformity", "non-compliance", "not following proper procedure", "policy", "policies", "procedure", "procedures", "guidelines", "sop", "process", "memorandum", "written requirement"]):
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
     if "uncooperative" in combined:
         return "Uncooperative or Failed To Produce Documents/Results Within Reasonable Time -4"
-
-    if any(k in combined for k in [
-        "nonconformity", "non-compliance", "not following proper procedure",
-        "policy", "policies", "procedure", "procedures", "guidelines",
-        "sop", "process", "memorandum", "written requirement"
-    ]):
-        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
-
     if "immaterial" in combined:
         return "Immaterial Findings 3"
-
     return "Ignore or Disregard Office/Operation Best Practices -3"
 
 
 def detect_reaction(issue, narrative, recommendation):
     text = f"{issue} {narrative} {recommendation}".lower()
-
     if "uncooperative" in text:
         return "Uncooperative"
-
     if "same offense" in text or "same finding" in text or "previous audit" in text or "previously noted" in text:
         return "Performed SAME offense"
-
     if "complied with previous recommendation" in text:
         return "Complied with previous recommendation"
-
     if "established guidelines" in text:
         return "Established guidelines"
-
     if "acknowledged" in text:
         return "Acknowledged the issue & will do correction"
-
     return "Do Some Adjustment"
 
 
 def detect_frequency(issue, narrative, recommendation):
     text = f"{issue} {narrative} {recommendation}".lower()
-
     prior_count = 0
     prior_count += len(re.findall(r"previous audit", text))
     prior_count += len(re.findall(r"previously noted", text))
     prior_count += len(re.findall(r"same finding was noted", text))
     prior_count += len(re.findall(r"reference no\.", text))
     prior_count += len(re.findall(r"\b20\d{2}iad\d+\b", text))
-
     if prior_count <= 0:
         return "First Time"
-
-    occurrence = prior_count + 1
-
-    if occurrence == 2:
-        return "Second Time"
-    if occurrence == 3:
-        return "Third Time"
-    if occurrence == 4:
-        return "Fourth Time"
-    if occurrence == 5:
-        return "Fifth Time"
-    if occurrence == 6:
-        return "Sixth Time"
-
-    return "Seventh Time"
+    return ["Second Time", "Third Time", "Fourth Time", "Fifth Time", "Sixth Time", "Seventh Time"][min(prior_count - 1, 5)]
 
 
 def parse_score(findings):
@@ -761,250 +502,118 @@ def parse_score(findings):
 def find_column(df, candidates):
     if df is None or df.empty:
         return None
-
     for c in df.columns:
         lower = str(c).lower()
         if any(x in lower for x in candidates):
             return c
-
     return None
 
 
 def match_employee(master_df, auditee):
     if master_df is None or master_df.empty:
         return "None", auditee
-
     name_col = find_column(master_df, ["full name", "employee name", "name"])
     id_col = find_column(master_df, ["employee id", "employee no", "id no", "id"])
-
     if not name_col:
         return "None", auditee
-
-    words = [
-        w.lower()
-        for w in re.sub(r"[^A-Za-zñÑ ]", " ", auditee).split()
-        if len(w) > 1
-    ]
-
+    words = [w.lower() for w in re.sub(r"[^A-Za-zñÑ ]", " ", auditee).split() if len(w) > 1]
     tokens = [words[0], words[-1]] if len(words) >= 2 else words
-
-    best = None
-    best_score = -1
-
+    best, best_score = None, -1
     for _, r in master_df.iterrows():
         full = clean_text(r.get(name_col, ""))
         score = sum(1 for t in tokens if t in full.lower())
-
         if len(tokens) >= 2 and all(t in full.lower() for t in tokens):
             score += 2
-
         if score > best_score:
-            best = r
-            best_score = score
-
+            best, best_score = r, score
     if best is not None and best_score >= 2:
         emp_id = clean_text(best.get(id_col, "None")) if id_col else "None"
         full_name = clean_text(best.get(name_col, auditee))
         return emp_id or "None", full_name or auditee
-
     return "None", auditee
 
 
+def extract_recommendation_from_segment(segment):
+    m = re.search(r"(We recommend.+|We advise.+|Please review.+|NONE\.?)", segment, re.I | re.S)
+    if not m:
+        return "None"
+    rec = m.group(1)
+    rec = re.split(r"Action Taken\s*:", rec, flags=re.I)[0]
+    return normalize_recommendation(rec)
+
+
+def remove_title_from_segment(segment, title):
+    result = segment
+    for part in title.split():
+        pass
+    # Remove exact normalized title words when possible, but keep narrative if PDF interleaved columns.
+    title_words = [re.escape(w) for w in clean_text(title).split()]
+    if title_words:
+        pat = r"\s*".join(title_words)
+        result = re.sub(pat, "", result, count=1, flags=re.I).strip()
+    return result
+
+
 def extract_finding_rows_from_pdf(pdf_file):
+    text = extract_all_text(pdf_file)
+    body = crop_report_body(text)
+    lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
+    entries = find_issue_title_entries(lines)
     rows = []
 
-    pdf_file.seek(0)
-
-    all_pages_text = []
-
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
-            all_pages_text.append(page_text)
-
-    pdf_file.seek(0)
-
-    text = "\n".join(all_pages_text).replace("\r", "\n")
-
-    # Remove signature / exhibit / irrelevant pages
-    cut_match = re.search(
-        r"\n\s*(Prepared/Audited by:|Prepared by:|Reviewed by:|Noted by:|cc:|EXHIBIT A|EXHIBIT B|Request for Soft Copy)",
-        text,
-        re.I
-    )
-
-    if cut_match:
-        text = text[:cut_match.start()]
-
-    # Start from actual Issue Table, not Objective 1, 2, 3, 4
-    issue_table_match = re.search(
-        r"Issue\s*\n?\s*No\.\s*Audit Findings\s*Recommendation",
-        text,
-        re.I
-    )
-
-    if issue_table_match:
-        text = text[issue_table_match.end():]
-    else:
-        first_actual_issue = re.search(
-            r"(?m)^\s*1\.\s*\n\s*[A-Z][A-Z0-9 ₱P,./:&()–\-]+",
-            text
-        )
-        if first_actual_issue:
-            text = text[first_actual_issue.start():]
-
-    # Find issue number markers: 1. / 2. / 3. / 4.
-    matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*$", text))
-
-    # Backup pattern if number and title are close together
-    if not matches:
-        matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*(?=\n)", text))
-
-    for idx, m in enumerate(matches):
-        issue_no = m.group(1)
-
-        start = m.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-
-        segment = text[start:end].strip()
-
-        lines = [
-            clean_text(x)
-            for x in segment.splitlines()
-            if clean_text(x)
-        ]
-
-        if not lines:
-            continue
-
-        title_lines = []
-        narrative_lines = []
-        rec_lines = []
-
-        mode = "title"
-
-        for line in lines:
-            low = line.lower()
-
-            if low.startswith(("we recommend", "we advise", "please review", "none")):
-                mode = "recommendation"
-
-            if mode == "recommendation":
-                rec_lines.append(line)
-                continue
-
-            if mode == "title":
-                is_title_line = (
-                    line.upper() == line
-                    and len(line) <= 180
-                    and not low.startswith((
-                        "surprise",
-                        "during",
-                        "upon",
-                        "the ",
-                        "there ",
-                        "details",
-                        "according",
-                        "as per",
-                        "ms.",
-                        "mr."
-                    ))
-                )
-
-                if is_title_line:
-                    title_lines.append(line.rstrip(":"))
-                    continue
-
-                mode = "narrative"
-
-            if mode == "narrative":
-                narrative_lines.append(line)
-
-        if not title_lines:
-            title_lines = [lines[0].rstrip(":")]
-            narrative_lines = lines[1:]
-
-        issue_title = normalize_title(" ".join(title_lines))
-        narrative = "\n".join(narrative_lines)
-        recommendation = normalize_recommendation(" ".join(rec_lines)) if rec_lines else "None"
+    for idx, entry in enumerate(entries):
+        start = entry["start"]
+        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
+        segment_lines = lines[start:next_start]
+        segment = "\n".join(segment_lines)
+        issue_title = entry["title"]
+        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
 
         rows.append({
-            "issue_no": issue_no,
+            "issue_no": str(idx + 1),
             "issue": issue_title,
-            "narrative": remove_action_taken(narrative),
-            "recommendation1": recommendation,
+            "narrative": remove_action_taken(narrative_segment),
+            "recommendation1": extract_recommendation_from_segment(segment),
             "recommendation2": "None",
-            "explanation": extract_explanation_from_narrative(narrative),
+            "explanation": extract_explanation_from_narrative(narrative_segment),
             "correction": extract_correction_from_text(segment),
         })
 
     return rows
-    
+
+
 def filter_no_findings_when_other_issues(items):
-    actual = []
-    no_findings = []
-
-    for item in items:
-        text = item["issue"].upper()
-
-        if "NO CASH SHORTAGE" in text or "NO FINDINGS" in text:
-            no_findings.append(item)
-        else:
-            actual.append(item)
-
-    return actual if actual else items
+    # Keep every numbered row. A separate No Findings row can be valid for a specific auditee/activity.
+    return items
 
 
 def classify_audit_type(text):
-    sales_terms = [
-        "area sales representative",
-        "district sales supervisor",
-        "regional sales supervisor",
-        "technical sales supervisor",
-        "sales personnel"
-    ]
-
+    sales_terms = ["area sales representative", "district sales supervisor", "regional sales supervisor", "technical sales supervisor", "sales personnel"]
     return "Operations Audit" if any(t in text.lower() for t in sales_terms) else "Financial Audit"
 
 
 def build_records(pdf_file, master_df=None, manual_df=None):
     text = extract_all_text(pdf_file)
     header = extract_header(text)
-
     emp_id, emp_name = match_employee(master_df, header["auditee_name"])
     auditor_default = prepared_by_auditor(text)
     audit_type = classify_audit_type(text)
-
     items = filter_no_findings_when_other_issues(extract_finding_rows_from_pdf(pdf_file))
 
     manual_map = {}
-
     if manual_df is not None and not manual_df.empty:
         for _, r in manual_df.iterrows():
             issue_no = clean_text(r.get("Issue No.", ""))
-
             if issue_no:
                 manual_map[issue_no] = r
 
     rows = []
-
     for row_no, item in enumerate(items, 1):
         manual = manual_map.get(item["issue_no"])
-
         task_id = header["task_id"]
         auditor = auditor_default
-
-        reaction = detect_reaction(
-            item["issue"],
-            item["narrative"],
-            item["recommendation1"]
-        )
-
-        frequency = detect_frequency(
-            item["issue"],
-            item["narrative"],
-            item["recommendation1"]
-        )
+        reaction = detect_reaction(item["issue"], item["narrative"], item["recommendation1"])
+        frequency = detect_frequency(item["issue"], item["narrative"], item["recommendation1"])
 
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
@@ -1012,59 +621,25 @@ def build_records(pdf_file, master_df=None, manual_df=None):
             reaction = clean_text(manual.get("Reaction", "")) or reaction
             frequency = clean_text(manual.get("Frequency", "")) or frequency
 
-        findings = classify_finding(
-            item["issue"],
-            item["recommendation1"],
-            item["narrative"],
-            header.get("company", ""),
-            header.get("audit_title", "")
-        )
-
+        findings = classify_finding(item["issue"], item["recommendation1"], item["narrative"], header.get("company", ""), header.get("audit_title", ""))
         score = parse_score(findings)
-
         if "No Findings" in findings or "Immaterial Findings" in findings:
             reaction = "Maintaining Status Quo"
             frequency = "Not Applicable"
-
         improve = RESPONSE_RATE.get(reaction, 0) * FREQUENCY_RATE.get(frequency, 1)
         net = score + improve
-
-        case_status = (
-            "No Case/Issue"
-            if ("No Findings" in findings or "Immaterial Findings" in findings)
-            else "Follow-up with HR"
-        )
-
+        case_status = "No Case/Issue" if ("No Findings" in findings or "Immaterial Findings" in findings) else "Follow-up with HR"
         user = auditor.split()[0] if auditor and auditor != "None" else "None"
 
         rows.append([
-            row_no,
-            date.today().isoformat(),
-            audit_type,
-            header["date_reported"],
-            header["audit_reference"],
-            emp_id,
-            emp_name,
-            task_id or "None",
-            header["scope_date"],
-            header["year"],
-            findings,
+            row_no, date.today().isoformat(), audit_type, header["date_reported"],
+            header["audit_reference"], emp_id, emp_name, task_id or "None",
+            header["scope_date"], header["year"], findings,
             make_issue_summary(item["issue"], item["narrative"]),
-            item["explanation"] or "None",
-            item["recommendation1"] or "None",
-            item["recommendation2"] or "None",
-            auditor or "None",
-            "None",
-            reaction,
-            frequency,
-            item["correction"] or "None",
-            "",
-            case_status,
-            score,
-            improve,
-            net,
-            "Individual",
-            user,
+            item["explanation"] or "None", item["recommendation1"] or "None",
+            item["recommendation2"] or "None", auditor or "None", "None",
+            reaction, frequency, item["correction"] or "None", "", case_status,
+            score, improve, net, "Individual", user,
         ])
 
     return pd.DataFrame(rows, columns=HEADERS), header, items
@@ -1072,29 +647,22 @@ def build_records(pdf_file, master_df=None, manual_df=None):
 
 def excel_bytes(df):
     output = BytesIO()
-
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Audit Extraction")
-
         ws = writer.book["Audit Extraction"]
         ws.freeze_panes = "A2"
-
         for cell in ws[1]:
             cell.font = cell.font.copy(bold=True)
             cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrap_text=True)
-
         widths = {
             "A": 5, "B": 14, "C": 18, "D": 18, "E": 16, "F": 14, "G": 28,
             "H": 12, "I": 16, "J": 10, "K": 55, "L": 60, "M": 60, "N": 60,
             "O": 35, "P": 28, "Q": 14, "R": 24, "S": 18, "T": 32, "U": 12,
-            "V": 20, "W": 10, "X": 14, "Y": 12, "Z": 14, "AA": 12
+            "V": 20, "W": 10, "X": 14, "Y": 12, "Z": 14, "AA": 12,
         }
-
         for col, width in widths.items():
             ws.column_dimensions[col].width = width
-
         for row in ws.iter_rows(min_row=2):
             for cell in row:
                 cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
-
     return output.getvalue()
