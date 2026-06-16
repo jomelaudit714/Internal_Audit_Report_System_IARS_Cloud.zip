@@ -812,70 +812,90 @@ def match_employee(master_df, auditee):
 
 def extract_finding_rows_from_pdf(pdf_file):
     rows = []
-    pdf_file.seek(0)
+    text = extract_all_text(pdf_file).replace("\r", "\n")
 
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            for table in page.extract_tables() or []:
-                for row in table:
-                    if not row:
-                        continue
+    # Keep only report body before signatures/exhibits
+    start_match = re.search(r"Issue\s*\n?No\.\s*Audit Findings\s*Recommendation", text, re.I)
+    start = start_match.end() if start_match else 0
 
-                    cells = [clean_cell_preserve(c) for c in row]
+    end_match = re.search(
+        r"Prepared/Audited by|Prepared by|Reviewed by|Noted by|cc:|EXHIBIT A|Request for Soft Copy",
+        text[start:],
+        re.I
+    )
+    end = start + end_match.start() if end_match else len(text)
 
-                    issue_no = None
-                    issue_idx = None
+    body = text[start:end]
 
-                    for i, c in enumerate(cells):
-                        if re.fullmatch(r"\d{1,2}\.?", clean_text(c)):
-                            issue_no = clean_text(c).rstrip(".")
-                            issue_idx = i
-                            break
+    # Split by issue number: 1. / 2. / 3. / 4.
+    matches = list(re.finditer(r"(?m)^\s*(\d{1,2})\.\s*$", body))
 
-                    if issue_no is None:
-                        continue
+    for idx, m in enumerate(matches):
+        issue_no = m.group(1)
+        seg_start = m.end()
+        seg_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        segment = body[seg_start:seg_end].strip()
 
-                    finding_cell = ""
-                    rec_cell = ""
+        lines = [clean_text(x) for x in segment.splitlines() if clean_text(x)]
 
-                    if len(cells) >= 3 and clean_text(cells[1]):
-                        finding_cell = cells[1]
-                        rec_cell = cells[2] if len(cells) > 2 else ""
+        if not lines:
+            continue
 
-                    if not clean_text(finding_cell):
-                        after = [c for c in cells[issue_idx + 1:] if clean_text(c)]
+        title_lines = []
+        narrative_lines = []
 
-                        if len(after) >= 2:
-                            finding_cell = after[0]
-                            rec_cell = after[1]
-                        elif len(after) == 1:
-                            finding_cell = after[0]
-                            rec_cell = ""
+        narrative_start_words = (
+            "surprise", "during", "upon", "the ", "there ", "details",
+            "according", "as per", "ms.", "mr.", "we requested", "action taken"
+        )
 
-                    if not clean_text(finding_cell):
-                        continue
+        recommendation_start_words = (
+            "we recommend", "we advise", "please review", "none"
+        )
 
-                    if "Audit Findings" in finding_cell:
-                        continue
+        for line in lines:
+            lower = line.lower()
 
-                    issue, narrative = split_title_body(finding_cell)
+            if lower.startswith(recommendation_start_words):
+                break
 
-                    if not clean_text(issue):
-                        continue
+            if lower.startswith(narrative_start_words):
+                narrative_lines.append(line)
+                continue
 
-                    rows.append({
-                        "issue_no": issue_no,
-                        "issue": issue,
-                        "narrative": remove_action_taken(narrative),
-                        "recommendation1": normalize_recommendation(rec_cell),
-                        "recommendation2": "None",
-                        "explanation": extract_explanation_from_narrative(narrative),
-                        "correction": extract_correction_from_text(narrative),
-                    })
+            if line.upper() == line and len(line) <= 180:
+                title_lines.append(line.rstrip(":"))
+            else:
+                narrative_lines.append(line)
 
-    pdf_file.seek(0)
+        if not title_lines:
+            title_lines = [lines[0].rstrip(":")]
+            narrative_lines = lines[1:]
+
+        issue_title = normalize_title(" ".join(title_lines))
+        narrative = "\n".join(narrative_lines)
+
+        # Recommendation
+        rec_text = "None"
+        rec_match = re.search(
+            r"(We recommend.+|We advise.+|Please review.+|NONE\.?)",
+            segment,
+            re.I | re.S
+        )
+        if rec_match:
+            rec_text = normalize_recommendation(rec_match.group(1))
+
+        rows.append({
+            "issue_no": issue_no,
+            "issue": issue_title,
+            "narrative": remove_action_taken(narrative),
+            "recommendation1": rec_text,
+            "recommendation2": "None",
+            "explanation": extract_explanation_from_narrative(narrative),
+            "correction": extract_correction_from_text(segment),
+        })
+
     return rows
-
 
 def filter_no_findings_when_other_issues(items):
     actual = []
