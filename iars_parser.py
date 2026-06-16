@@ -287,6 +287,36 @@ def classify_finding(issue, recommendation):
 
     return "Ignore or Disregard Office/Operation Best Practices -3"
 
+
+def detect_reaction(issue, narrative, recommendation):
+    text = f"{issue} {narrative} {recommendation}".lower()
+
+    if "uncooperative" in text:
+        return "Uncooperative"
+
+    if "same offense" in text or "same finding" in text or "previous audit" in text or "previously noted" in text:
+        return "Performed SAME offense"
+
+    if "complied with previous recommendation" in text:
+        return "Complied with previous recommendation"
+
+    if "established guidelines" in text:
+        return "Established guidelines"
+
+    if "acknowledged" in text:
+        return "Acknowledged the issue & will do correction"
+
+    return "Do Some Adjustment"
+
+
+def detect_frequency(issue, narrative, recommendation):
+    text = f"{issue} {narrative} {recommendation}".lower()
+
+    if "previous audit" in text or "previously noted" in text or "same finding was noted" in text:
+        return "Second Time"
+
+    return "First Time"
+
 def parse_score(findings):
     m = re.search(r"(-?\d+)\s*$", findings or "")
     return int(m.group(1)) if m else 0
