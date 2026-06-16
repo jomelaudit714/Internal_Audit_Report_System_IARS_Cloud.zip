@@ -284,6 +284,7 @@ def extract_explanation_from_narrative(narrative):
 def make_issue_summary(issue, narrative):
     combined = clean_text(issue + " " + narrative).lower()
     issue_clean = clean_text(issue)
+    
     no_finding_patterns = [
     "no cash shortage",
     "no cash overage",
@@ -303,7 +304,8 @@ def make_issue_summary(issue, narrative):
 ]
 
 if any(p in combined for p in no_finding_patterns):
-    return "No Findings 10"
+    return "No cash shortage or overage was noted."
+    
     amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
 
