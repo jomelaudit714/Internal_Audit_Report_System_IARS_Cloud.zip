@@ -700,49 +700,58 @@ def extract_finding_rows_from_pdf(pdf_file):
 
                     cells = [clean_cell_preserve(c) for c in row]
 
-                    issue_idx = None
+                    # Detect issue number column
                     issue_no = None
+                    issue_idx = None
+
                     for i, c in enumerate(cells):
                         if re.fullmatch(r"\d{1,2}\.?", clean_text(c)):
-                            issue_idx = i
                             issue_no = clean_text(c).rstrip(".")
+                            issue_idx = i
                             break
 
-                    if issue_idx is None:
+                    if issue_no is None:
                         continue
 
-                    after = [c for c in cells[issue_idx + 1:] if clean_text(c)]
-                    if not after:
-                        continue
+                    # For your audit report table:
+                    # col 0 = Issue No.
+                    # col 1 = Audit Findings
+                    # col 2 = Recommendation
+                    finding_cell = ""
+                    rec_cell = ""
 
-                    if len(after) >= 2:
-                        finding_cell, rec_cell = after[-2], after[-1]
+                    if len(cells) >= 3:
+                        finding_cell = cells[1]
+                        rec_cell = cells[2]
                     else:
-                        finding_cell, rec_cell = after[0], ""
+                        after = [c for c in cells[issue_idx + 1:] if clean_text(c)]
+                        if len(after) >= 2:
+                            finding_cell = after[0]
+                            rec_cell = after[1]
+                        elif len(after) == 1:
+                            finding_cell = after[0]
+                            rec_cell = ""
 
-                    if "Audit Findings" in finding_cell or clean_text(finding_cell).lower() == "no.":
+                    if not clean_text(finding_cell):
+                        continue
+
+                    if "Audit Findings" in finding_cell:
                         continue
 
                     issue, narrative = split_title_body(finding_cell)
-                    if not issue:
-                        continue
-
-                    recommendation = normalize_recommendation(rec_cell)
-                    correction = extract_correction_from_text(narrative)
-                    narrative_no_action = remove_action_taken(narrative)
 
                     rows.append({
                         "issue_no": issue_no,
                         "issue": issue,
-                        "narrative": narrative_no_action,
-                        "recommendation1": recommendation,
+                        "narrative": remove_action_taken(narrative),
+                        "recommendation1": normalize_recommendation(rec_cell),
                         "recommendation2": "None",
                         "explanation": extract_explanation_from_narrative(narrative),
-                        "correction": correction,
+                        "correction": extract_correction_from_text(narrative),
                     })
 
     return rows
-
+    
 def filter_no_findings_when_other_issues(items):
     actual, no_findings = [], []
     for item in items:
