@@ -286,25 +286,25 @@ def make_issue_summary(issue, narrative):
     issue_clean = clean_text(issue)
     
     no_finding_patterns = [
-    "no cash shortage",
-    "no cash overage",
-    "no cash shortage/overage",
-    "no cash overage/shortage",
-    "no cash shortage or overage",
-    "no cash overage or shortage",
-    "no shortage/overage",
-    "no overage/shortage",
-    "fund is intact",
-    "cash count tallied",
-    "cash count matched",
-    "cash counted matched",
-    "no discrepancy noted",
-    "no variance noted",
-    "no findings"
-]
+        "no cash shortage",
+        "no cash overage",
+        "no cash shortage/overage",
+        "no cash overage/shortage",
+        "no cash shortage or overage",
+        "no cash overage or shortage",
+        "no shortage/overage",
+        "no overage/shortage",
+        "fund is intact",
+        "cash count tallied",
+        "cash count matched",
+        "cash counted matched",
+        "no discrepancy noted",
+        "no variance noted",
+        "no findings"
+    ]
 
-if any(p in combined for p in no_finding_patterns):
-    return "No cash shortage or overage was noted."
+    if any(p in combined for p in no_finding_patterns):
+        return "No cash shortage or overage was noted."
     
     amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
     amount = max(amounts) if amounts else None
@@ -420,25 +420,25 @@ def classify_finding(issue, recommendation):
     rec_lower = clean_text(recommendation).lower()
     combined = f"{issue_lower} {rec_lower}"
     no_finding_patterns = [
-    "no cash shortage",
-    "no cash overage",
-    "no cash shortage/overage",
-    "no cash overage/shortage",
-    "no cash shortage or overage",
-    "no cash overage or shortage",
-    "no shortage/overage",
-    "no overage/shortage",
-    "fund is intact",
-    "cash count tallied",
-    "cash count matched",
-    "cash counted matched",
-    "no discrepancy noted",
-    "no variance noted",
-    "no findings"
-]
+        "no cash shortage",
+        "no cash overage",
+        "no cash shortage/overage",
+        "no cash overage/shortage",
+        "no cash shortage or overage",
+        "no cash overage or shortage",
+        "no shortage/overage",
+        "no overage/shortage",
+        "fund is intact",
+        "cash count tallied",
+        "cash count matched",
+        "cash counted matched",
+        "no discrepancy noted",
+        "no variance noted",
+        "no findings"
+    ]
 
-if any(p in combined for p in no_finding_patterns):
-    return "No Findings 10"
+    if any(p in combined for p in no_finding_patterns):
+        return "No Findings 10"
 
     amounts = extract_money_amounts(issue)
     amount = max(amounts) if amounts else None
