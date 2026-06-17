@@ -249,10 +249,16 @@ def normalize_title(issue_title):
     title = clean_text(issue_title).strip().strip(":")
     upper = title.upper()
 
-    # Keep only the actual issue title when activity/auditee/company titles are mixed with it.
+    # Keep only the actual issue title when activity/auditee/company title is mixed with it.
     for key in PRIORITY_TITLES:
         if key in upper:
             return clean_text(title[upper.find(key):])
+
+    # Special case: minimal cash overage should still be treated as cash overage,
+    # while preserving the amount in the issue title.
+    if "MINIMAL CASH OVERAGE" in upper:
+        idx = upper.find("CASH OVERAGE")
+        return clean_text(title[idx:]) if idx >= 0 else title
 
     if upper in ["OTHER ISSUE", "OTHER ISSUES"]:
         return "OTHER ISSUE"
@@ -261,7 +267,7 @@ def normalize_title(issue_title):
 
 
 def infer_issue_title_from_narrative(issue_title, narrative):
-    """Convert generic issue titles into meaningful issue titles without changing the audit thought."""
+    """Convert generic issue titles into meaningful issue titles without changing audit thought."""
     title = clean_text(issue_title)
     text = clean_text(narrative)
     lower = text.lower()
@@ -270,13 +276,19 @@ def infer_issue_title_from_narrative(issue_title, narrative):
         return title
 
     if "budget" in lower and ("petty cash request" in lower or "pcr" in lower):
-        if "does not require" in lower or "absence of a pcr" in lower or "submitted prior to the release" in lower:
+        if (
+            "does not require" in lower
+            or "absence of a pcr" in lower
+            or "submitted prior to the release" in lower
+            or "submit the pcr only upon liquidation" in lower
+        ):
             return "BUDGET RELEASE WITHOUT PRIOR PCR"
 
     if "without pcr" in lower or "no pcr" in lower:
         return "BUDGET RELEASE WITHOUT PRIOR PCR"
 
     return title
+
 
 
 def extract_title_prefix(line):
@@ -354,8 +366,8 @@ def find_issue_title_entries(lines):
 def split_finding_cell(finding_cell):
     """Split a table finding cell into issue title and narrative.
 
-    This preserves the bold/title header as Issue Detail Issue and avoids
-    capturing audit activity titles when another issue title is present.
+    The Issue Detail Issue should be the bold/title line only. If an activity
+    title appears before the actual issue title, keep only the actual issue title.
     """
     lines = [
         clean_text(x)
@@ -371,31 +383,30 @@ def split_finding_cell(finding_cell):
 
     for i, line in enumerate(lines):
         upper = line.upper().strip().rstrip(":")
+        is_generic_other = upper in ["OTHER ISSUE", "OTHER ISSUES"]
 
-        # Stop title capture when narrative starts.
-        if upper_ratio(line) < 0.80 and not upper in ["OTHER ISSUE", "OTHER ISSUES"]:
+        # Narrative starts once the text is no longer title-like.
+        if upper_ratio(line) < 0.80 and not is_generic_other:
             narrative_start = i
             break
 
-        # Accept generic OTHER ISSUE temporarily; infer later from narrative.
-        is_generic_other = upper in ["OTHER ISSUE", "OTHER ISSUES"]
-
-        # Accept title-looking lines only.
         is_title = (
             is_generic_other
             or any(k in upper for k in TITLE_KEYWORDS)
             or any(k in upper for k in PRIORITY_TITLES)
+            or "MINIMAL CASH OVERAGE" in upper
+            or "CASH ADVANCES COUNT" in upper
         )
 
         if is_title and len(line) <= 180:
-            title_lines.append(line.strip().rstrip(":"))
+            title_lines.append(line.rstrip(":"))
             narrative_start = i + 1
         else:
             narrative_start = i
             break
 
     if not title_lines:
-        title_lines = [lines[0].strip().rstrip(":")]
+        title_lines = [lines[0].rstrip(":")]
         narrative_start = 1
 
     raw_title = normalize_title(" ".join(title_lines))
@@ -409,13 +420,28 @@ def normalize_recommendation(rec):
     rec = clean_text(rec).replace("NONE.", "None").strip()
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
+
+    # Remove recommendation openers while preserving the actual action.
     rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
-    rec = re.sub(r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain)\b", lambda m: m.group(2).capitalize(), rec, flags=re.I)
+
+    # Remove unnecessary subject phrases.
+    rec = re.sub(r"^(the\s+)?custodian\s+to\s+", "", rec, flags=re.I)
+    rec = re.sub(r"^(the\s+)?custodian\s+should\s+", "", rec, flags=re.I)
+    rec = re.sub(r"^management\s+should\s+", "", rec, flags=re.I)
+    rec = re.sub(
+        r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain|prepare|stamp)\b",
+        lambda m: m.group(2).capitalize(),
+        rec,
+        flags=re.I,
+    )
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
+
+    rec = clean_text(rec)
     return rec[0].upper() + rec[1:] if rec else "None"
+
 
 
 def remove_action_taken(text):
@@ -486,6 +512,92 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
     audit_title_lower = clean_text(audit_title).lower()
     combined = f"{issue_lower} {narrative_lower} {rec_lower}"
 
+    # Explicit no-finding titles/phrases.
+    if any(p in combined for p in NO_FINDING_PATTERNS):
+        return "No Findings 10"
+
+    amounts = extract_money_amounts(issue) or extract_money_amounts(narrative)
+    amount = max(amounts) if amounts else None
+
+    is_estancia = "estancia de lorenzo" in company_lower
+    is_petty_cash = "petty cash" in combined or "petty cash" in audit_title_lower
+    is_cash_advance = is_cash_advance_context(issue, narrative, audit_title)
+
+    # Special rule: Cash Advance Overage is always No Findings.
+    if is_cash_advance and any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage", "overage"]):
+        return "No Findings 10"
+
+    # Cash/Fund/Sales/Collection/Daily Sales/Change Fund shortages and overages:
+    # evaluate immateriality first before actual finding category.
+    is_shortage = any(k in issue_lower for k in ["cash shortage", "fund shortage", "collection shortage", "sales shortage", "change fund shortage", "shortage"])
+    is_overage = any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage", "sales overage", "change fund overage", "minimal cash overage", "overage"])
+
+    if (is_shortage or is_overage) and is_immaterial_cash_variance(amount, issue, narrative, audit_title):
+        return "Immaterial Findings 3"
+
+    if is_shortage:
+        if amount is not None and amount < 3000:
+            return "Cash/Fund/Collection Shortage (below ₱3,000.00) -4"
+        return "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8"
+
+    if is_overage:
+        if amount is not None and amount < 1000:
+            return "Cash/Fund/Collection Overage (below ₱1,000.00) -2"
+        return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
+
+    # Petty Cash specific hard trigger agreed by audit team.
+    if "without stamped" in combined and "paid" in combined:
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
+    # Company/activity overrides must be specific and should not over-capture generic PCR issues.
+    if is_estancia and any(k in combined for k in ["policy", "procedure", "proper procedure", "guidelines", "sop", "cash voucher"]):
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
+    if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported receipt", "unsupported invoice", "official receipt without", "invoice without"]):
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
+    if any(k in issue_lower for k in ["incomplete details", "incomplete receipt", "incorrect receipt", "incomplete cv", "incomplete pcv", "incorrect pcv", "omission", "alteration"]):
+        if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required by policy"]):
+            return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+        if any(k in combined for k in ["missing", "no signature", "no date", "incorrect date", "no supplier", "no owner"]):
+            return "Omission & Alteration Of Details in Documents -7"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in ["late preparation of pcv", "no preparation of pcv", "uncancelled pcv", "inconsistent using of pcv"]):
+        if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required by policy"]):
+            return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in ["no document used", "undocumented", "without document"]):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+
+    if any(k in issue_lower for k in ["inaccurate monitoring", "outdated monitoring", "no daily balancing", "no monitoring", "incomplete monitoring", "delayed recording"]):
+        if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "proper procedure"]):
+            return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in ["depleted fund", "low fund", "fund depletion", "mixing of fund", "mixed fund", "personal cash", "outside its purpose", "budget release without prior pcr"]):
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    # Nonconformity trigger: only when the recommendation/narrative explicitly refers to process/policy/procedure/guideline/SOP/memorandum.
+    nonconf_patterns = [
+        "nonconformity", "non-conformity", "non-compliance",
+        "not following proper procedure", "policy", "policies", "procedure", "procedures",
+        "guideline", "guidelines", "sop", "memorandum", "written requirement",
+        "please review process", "please review guidelines", "please review procedure", "please review policy",
+        "review process", "review guidelines", "review procedure", "review policy",
+    ]
+    if any(k in combined for k in nonconf_patterns):
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
+    if "uncooperative" in combined:
+        return "Uncooperative or Failed To Produce Documents/Results Within Reasonable Time -4"
+    if "immaterial" in combined:
+        return "Immaterial Findings 3"
+
+    return "Ignore or Disregard Office/Operation Best Practices -3"
+
+
     if any(p in combined for p in NO_FINDING_PATTERNS):
         return "No Findings 10"
 
@@ -501,19 +613,15 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
             return "Cash/Fund/Collection Shortage (below ₱3,000.00) -4"
         return "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8"
 
-    if any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage", "minimal cash overage"]):
-        # Evaluate immateriality first before actual overage category.
+    if any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage"]):
         if amount is not None and amount < 1000:
-            return "Immaterial Findings 3"
+            return "Cash/Fund/Collection Overage (below ₱1,000.00) -2"
         return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
-
-    if "without stamped" in combined and "paid" in combined:
-        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
     if is_estancia and any(k in combined for k in ["policy", "procedure", "proper procedure", "guidelines", "sop", "required", "must", "cash voucher"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported receipt", "unsupported invoice", "official receipt without", "invoice without"]):
+    if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported", "cash voucher", "official receipt", "invoice"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
     if any(k in issue_lower for k in ["incomplete details", "incomplete receipt", "incorrect receipt", "incomplete cv", "incomplete pcv", "incorrect pcv", "omission", "alteration"]):
@@ -621,7 +729,6 @@ def extract_recommendation_from_segment(segment):
     if not text or text.upper() in ["NONE", "NONE.", "N/A"]:
         return "None"
 
-    # If the cell itself is already the recommendation, normalize it directly.
     if re.match(r"^(We recommend|We advise|Please review|The PCR form should|The custodian should|Management should)", text, re.I):
         rec = text
     else:
@@ -634,128 +741,6 @@ def extract_recommendation_from_segment(segment):
     return normalize_recommendation(rec)
 
 
-def remove_title_from_segment(segment, title):
-    result = segment
-    for part in title.split():
-        pass
-    # Remove exact normalized title words when possible, but keep narrative if PDF interleaved columns.
-    title_words = [re.escape(w) for w in clean_text(title).split()]
-    if title_words:
-        pat = r"\s*".join(title_words)
-        result = re.sub(pat, "", result, count=1, flags=re.I).strip()
-    return result
-
-
-def extract_finding_rows_from_pdf(pdf_file):
-    """Extract finding rows from PDF.
-
-    Primary method: pdfplumber table extraction to keep Audit Findings and Recommendation separate.
-    Fallback method: title-line extraction for irregular PDFs.
-    """
-    rows = []
-    pdf_file.seek(0)
-
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            for table in page.extract_tables() or []:
-                for row in table:
-                    if not row:
-                        continue
-
-                    cells = [clean_cell_preserve(c) for c in row]
-                    # Detect issue number.
-                    issue_no = None
-                    for c in cells:
-                        m = re.fullmatch(r"\s*(\d{1,2})\.?\s*", clean_text(c))
-                        if m:
-                            issue_no = m.group(1)
-                            break
-
-                    if not issue_no:
-                        continue
-
-                    non_empty = [c for c in cells if clean_text(c)]
-
-                    # Expected structures:
-                    # [issue_no, finding_cell, recommendation_cell]
-                    # or [issue_no, blank, blank, finding_cell, recommendation_cell]
-                    if len(non_empty) < 2:
-                        continue
-
-                    finding_cell = ""
-                    rec_cell = ""
-
-                    if clean_text(non_empty[0]).rstrip(".") == issue_no:
-                        if len(non_empty) >= 3:
-                            finding_cell = non_empty[1]
-                            rec_cell = non_empty[2]
-                        elif len(non_empty) == 2:
-                            finding_cell = non_empty[1]
-                            rec_cell = "None"
-                    else:
-                        continue
-
-                    if not clean_text(finding_cell):
-                        continue
-
-                    issue_title, narrative = split_finding_cell(finding_cell)
-                    recommendation = extract_recommendation_from_segment(rec_cell)
-
-                    if not clean_text(issue_title):
-                        continue
-
-                    rows.append({
-                        "issue_no": issue_no,
-                        "issue": issue_title,
-                        "narrative": remove_action_taken(narrative),
-                        "recommendation1": recommendation,
-                        "recommendation2": "None",
-                        "explanation": extract_explanation_from_narrative(narrative),
-                        "correction": extract_correction_from_text(narrative + "\n" + clean_text(rec_cell)),
-                    })
-
-    pdf_file.seek(0)
-
-    # If table extraction succeeded, use it.
-    if rows:
-        return rows
-
-    # Fallback: previous title-line extraction for irregular PDFs.
-    text = extract_all_text(pdf_file)
-    body = crop_report_body(text)
-    lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
-    entries = find_issue_title_entries(lines)
-    fallback_rows = []
-
-    for idx, entry in enumerate(entries):
-        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
-        segment_lines = lines[entry["start"]:next_start]
-        segment = "\n".join(segment_lines)
-        issue_title = entry["title"]
-        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
-        issue_title = infer_issue_title_from_narrative(issue_title, narrative_segment)
-
-        fallback_rows.append({
-            "issue_no": str(idx + 1),
-            "issue": issue_title,
-            "narrative": remove_action_taken(narrative_segment),
-            "recommendation1": extract_recommendation_from_segment(segment),
-            "recommendation2": "None",
-            "explanation": extract_explanation_from_narrative(narrative_segment),
-            "correction": extract_correction_from_text(segment),
-        })
-
-    return fallback_rows
-
-
-def filter_no_findings_when_other_issues(items):
-    # Keep every numbered row. A separate No Findings row can be valid for a specific auditee/activity.
-    return items
-
-
-def classify_audit_type(text):
-    sales_terms = ["area sales representative", "district sales supervisor", "regional sales supervisor", "technical sales supervisor", "sales personnel"]
-    return "Operations Audit" if any(t in text.lower() for t in sales_terms) else "Financial Audit"
 
 
 
@@ -778,11 +763,7 @@ def concise_text(text, max_words=25, field="general"):
     text = re.sub(r"^(It was observed that|It was noted that|The audit noted that)\s+", "", text, flags=re.I)
 
     if field.startswith("recommendation"):
-        text = re.sub(r"^the custodian\s+to\s+", "", text, flags=re.I)
-        text = re.sub(r"^custodian\s+to\s+", "", text, flags=re.I)
-        text = re.sub(r"^management\s+should\s+", "", text, flags=re.I)
-        if text:
-            text = text[0].upper() + text[1:]
+        text = normalize_recommendation(text)
 
     words = text.split()
     if len(words) <= max_words:
@@ -793,6 +774,59 @@ def concise_text(text, max_words=25, field="general"):
         return sentences[0].strip()
 
     return " ".join(words[:max_words]).rstrip(",;") + "..."
+
+
+def extract_accountability_amount(text):
+    """Extract base/accountability amount for variance percentage computation."""
+    patterns = [
+        r"total accountability of\s*(?:₱|P)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2})?)",
+        r"accountability of\s*(?:₱|P)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2})?)",
+        r"accountability amount(?:ing)? to\s*(?:₱|P)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2})?)",
+        r"total cash available was\s*(?:₱|P)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2})?)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, text or "", re.I)
+        if m:
+            try:
+                return float(m.group(1).replace(",", ""))
+            except Exception:
+                pass
+    return None
+
+
+def is_cash_advance_context(issue, narrative, audit_title=""):
+    text = clean_text(f"{issue} {narrative} {audit_title}").lower()
+    return "cash advance" in text or "cash advances" in text
+
+
+def is_cash_accountability_context(issue, narrative, audit_title=""):
+    text = clean_text(f"{issue} {narrative} {audit_title}").lower()
+    terms = [
+        "petty cash", "revolving fund", "cash advance", "cash advances", "cash sales",
+        "sales collection", "daily sales", "change fund", "collection", "fund"
+    ]
+    return any(t in text for t in terms)
+
+
+def is_immaterial_cash_variance(amount, issue, narrative, audit_title=""):
+    """Immaterial if P0.01-P99.00 or variance percent <= 0.05%."""
+    if amount is None or amount <= 0:
+        return False
+
+    if not is_cash_accountability_context(issue, narrative, audit_title):
+        return False
+
+    if 0.01 <= amount <= 99.00:
+        return True
+
+    base = extract_accountability_amount(narrative)
+    if base and base > 0:
+        variance_pct = (amount / base) * 100
+        if variance_pct <= 0.05:
+            return True
+
+    return False
 
 
 def is_no_or_immaterial_finding(finding_text, issue_text=""):
@@ -811,10 +845,10 @@ def is_no_or_immaterial_finding(finding_text, issue_text=""):
 
 
 def filter_rows_by_task_id(row_dicts):
-    """Filter no-finding/immaterial rows based on Task ID.
+    """Remove no-finding/immaterial rows only when same Task ID has actual findings.
 
-    If Task ID is blank/None, all rows are treated as the same task.
-    If different Task IDs are supplied later, each Task ID is evaluated separately.
+    If Task ID is blank/None, all rows are treated as one task.
+    If different Task IDs are supplied, each Task ID is evaluated separately.
     """
     grouped = {}
     for row in row_dicts:
@@ -827,13 +861,142 @@ def filter_rows_by_task_id(row_dicts):
             r for r in rows
             if not is_no_or_immaterial_finding(r.get("findings", ""), r.get("issue", ""))
         ]
-
         if actual:
             final_rows.extend(actual)
         else:
             final_rows.extend(rows)
 
     return final_rows
+def remove_title_from_segment(segment, title):
+    result = segment
+    for part in title.split():
+        pass
+    # Remove exact normalized title words when possible, but keep narrative if PDF interleaved columns.
+    title_words = [re.escape(w) for w in clean_text(title).split()]
+    if title_words:
+        pat = r"\s*".join(title_words)
+        result = re.sub(pat, "", result, count=1, flags=re.I).strip()
+    return result
+
+
+def extract_finding_rows_from_pdf(pdf_file):
+    """Extract finding rows from PDF.
+
+    Primary method uses table extraction so Audit Findings and Recommendation stay separated.
+    Fallback method uses title-line extraction for irregular PDFs.
+    """
+    rows = []
+    pdf_file.seek(0)
+
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables() or []:
+                for row in table:
+                    if not row:
+                        continue
+
+                    cells = [clean_cell_preserve(c) for c in row]
+                    issue_no = None
+                    for c in cells:
+                        m = re.fullmatch(r"\s*(\d{1,2})\.?\s*", clean_text(c))
+                        if m:
+                            issue_no = m.group(1)
+                            break
+
+                    if not issue_no:
+                        continue
+
+                    non_empty = [c for c in cells if clean_text(c)]
+                    if len(non_empty) < 2:
+                        continue
+
+                    if clean_text(non_empty[0]).rstrip(".") != issue_no:
+                        continue
+
+                    finding_cell = non_empty[1] if len(non_empty) >= 2 else ""
+                    rec_cell = non_empty[2] if len(non_empty) >= 3 else "None"
+
+                    if not clean_text(finding_cell):
+                        continue
+
+                    issue_title, narrative = split_finding_cell(finding_cell)
+                    recommendation = extract_recommendation_from_segment(rec_cell)
+
+                    if not clean_text(issue_title):
+                        continue
+
+                    rows.append({
+                        "issue_no": issue_no,
+                        "issue": issue_title,
+                        "narrative": remove_action_taken(narrative),
+                        "recommendation1": recommendation,
+                        "recommendation2": "None",
+                        "explanation": extract_explanation_from_narrative(narrative),
+                        "correction": extract_correction_from_text(narrative + "\n" + clean_text(rec_cell)),
+                    })
+
+    pdf_file.seek(0)
+    if rows:
+        return rows
+
+    # Fallback for irregular PDFs.
+    text = extract_all_text(pdf_file)
+    body = crop_report_body(text)
+    lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
+    entries = find_issue_title_entries(lines)
+    fallback_rows = []
+
+    for idx, entry in enumerate(entries):
+        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
+        segment_lines = lines[entry["start"]:next_start]
+        segment = "\n".join(segment_lines)
+        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
+        issue_title = infer_issue_title_from_narrative(entry["title"], narrative_segment)
+
+        fallback_rows.append({
+            "issue_no": str(idx + 1),
+            "issue": issue_title,
+            "narrative": remove_action_taken(narrative_segment),
+            "recommendation1": extract_recommendation_from_segment(segment),
+            "recommendation2": "None",
+            "explanation": extract_explanation_from_narrative(narrative_segment),
+            "correction": extract_correction_from_text(segment),
+        })
+
+    return fallback_rows
+
+
+    for idx, entry in enumerate(entries):
+        start = entry["start"]
+        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
+        segment_lines = lines[start:next_start]
+        segment = "\n".join(segment_lines)
+        issue_title = entry["title"]
+        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
+
+        rows.append({
+            "issue_no": str(idx + 1),
+            "issue": issue_title,
+            "narrative": remove_action_taken(narrative_segment),
+            "recommendation1": extract_recommendation_from_segment(segment),
+            "recommendation2": "None",
+            "explanation": extract_explanation_from_narrative(narrative_segment),
+            "correction": extract_correction_from_text(segment),
+        })
+
+    return rows
+
+
+def filter_no_findings_when_other_issues(items):
+    # Row filtering is now handled after classification using Task ID in build_records().
+    return items
+
+
+
+def classify_audit_type(text):
+    sales_terms = ["area sales representative", "district sales supervisor", "regional sales supervisor", "technical sales supervisor", "sales personnel"]
+    return "Operations Audit" if any(t in text.lower() for t in sales_terms) else "Financial Audit"
+
 
 def build_records(pdf_file, master_df=None, manual_df=None):
     text = extract_all_text(pdf_file)
@@ -902,7 +1065,7 @@ def build_records(pdf_file, master_df=None, manual_df=None):
                 row_no, date.today().isoformat(), audit_type, header["date_reported"],
                 header["audit_reference"], emp_id, emp_name, task_id or "None",
                 header["scope_date"], header["year"], findings,
-                issue_title,
+                issue_title,  # Issue Detail Issue = exact issue title.
                 explanation or "None", recommendation1 or "None",
                 recommendation2 or "None", auditor or "None", "None",
                 reaction, frequency, correction or "None", "", case_status,
@@ -910,6 +1073,10 @@ def build_records(pdf_file, master_df=None, manual_df=None):
             ],
         })
 
+    # Task ID based filter:
+    # - Blank/None Task ID means all findings in the report are same task.
+    # - Different Task IDs are evaluated separately.
+    # - If actual findings exist in a task, No Findings/Immaterial rows are removed for that task.
     filtered = filter_rows_by_task_id(row_dicts)
 
     rows = []
@@ -917,6 +1084,51 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         row = row_info["row"]
         row[0] = new_no
         rows.append(row)
+
+    return pd.DataFrame(rows, columns=HEADERS), header, items
+
+
+    manual_map = {}
+    if manual_df is not None and not manual_df.empty:
+        for _, r in manual_df.iterrows():
+            issue_no = clean_text(r.get("Issue No.", ""))
+            if issue_no:
+                manual_map[issue_no] = r
+
+    rows = []
+    for row_no, item in enumerate(items, 1):
+        manual = manual_map.get(item["issue_no"])
+        task_id = header["task_id"]
+        auditor = auditor_default
+        reaction = detect_reaction(item["issue"], item["narrative"], item["recommendation1"])
+        frequency = detect_frequency(item["issue"], item["narrative"], item["recommendation1"])
+
+        if manual is not None:
+            task_id = clean_text(manual.get("Task ID", "")) or task_id
+            auditor = clean_text(manual.get("Auditor", "")) or auditor
+            reaction = clean_text(manual.get("Reaction", "")) or reaction
+            frequency = clean_text(manual.get("Frequency", "")) or frequency
+
+        findings = classify_finding(item["issue"], item["recommendation1"], item["narrative"], header.get("company", ""), header.get("audit_title", ""))
+        score = parse_score(findings)
+        if "No Findings" in findings or "Immaterial Findings" in findings:
+            reaction = "Maintaining Status Quo"
+            frequency = "Not Applicable"
+        improve = RESPONSE_RATE.get(reaction, 0) * FREQUENCY_RATE.get(frequency, 1)
+        net = score + improve
+        case_status = "No Case/Issue" if ("No Findings" in findings or "Immaterial Findings" in findings) else "Follow-up with HR"
+        user = auditor.split()[0] if auditor and auditor != "None" else "None"
+
+        rows.append([
+            row_no, date.today().isoformat(), audit_type, header["date_reported"],
+            header["audit_reference"], emp_id, emp_name, task_id or "None",
+            header["scope_date"], header["year"], findings,
+            make_issue_summary(item["issue"], item["narrative"]),
+            item["explanation"] or "None", item["recommendation1"] or "None",
+            item["recommendation2"] or "None", auditor or "None", "None",
+            reaction, frequency, item["correction"] or "None", "", case_status,
+            score, improve, net, "Individual", user,
+        ])
 
     return pd.DataFrame(rows, columns=HEADERS), header, items
 
