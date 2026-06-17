@@ -390,29 +390,47 @@ def infer_issue_title_from_narrative(issue_title, narrative):
 
 
 def enhance_issue_title_details(issue_title, narrative):
-    """Add missing-detail qualifier to generic issue titles when the narrative identifies the exact field."""
+    """Add missing-detail qualifier to generic issue titles when the report identifies the exact field."""
     title = clean_text(issue_title)
     lower_title = title.lower()
-    text = clean_text(narrative)
+    text = clean_text(f"{issue_title} {narrative}")
     lower = text.lower()
 
-    if lower_title == "incomplete details in pcv":
+    if lower_title.startswith("incomplete details in pcv"):
+        # If the title already includes details after colon, normalize colon to dash.
+        m = re.search(r"incomplete details in pcv\s*:\s*(.+)", title, re.I)
+        if m:
+            details = clean_text(m.group(1)).upper()
+            return f"INCOMPLETE DETAILS IN PCV - {details}"
+
         fields = []
         quoted = re.findall(r"[“\"]([^”\"]+)[”\"]", text)
         for q in quoted:
             q_clean = clean_text(q).strip()
-            if q_clean and len(q_clean) <= 40:
+            if q_clean and len(q_clean) <= 50:
                 fields.append(q_clean.upper())
 
-        if "payee" in lower and "PAYEE" not in fields:
+        if "recipient" in lower and "signature" in lower:
+            fields.append("RECIPIENT'S SIGNATURE")
+        if "pcv date" in lower or ("date" in lower and "pcv" in lower):
+            fields.append("PCV DATE")
+        if "payee" in lower:
             fields.append("PAYEE")
-        if "approved by" in lower and "APPROVED BY" not in fields:
+        if "approved by" in lower:
             fields.append("APPROVED BY")
-        if "signature" in lower and "SIGNATURE" not in fields and not fields:
+        elif "approval" in lower or "approver" in lower:
+            fields.append("APPROVAL")
+        if "signature" in lower and not fields:
             fields.append("SIGNATURE")
 
         if fields:
-            return f"{title} - {', '.join(dict.fromkeys(fields))}"
+            # De-duplicate while preserving order.
+            clean_fields = []
+            for f in fields:
+                f = f.strip()
+                if f and f not in clean_fields:
+                    clean_fields.append(f)
+            return f"INCOMPLETE DETAILS IN PCV - {', '.join(clean_fields)}"
 
     return title
 
@@ -489,11 +507,31 @@ def find_issue_title_entries(lines):
     return entries
 
 
-def split_finding_cell(finding_cell):
-    """Split a table finding cell into issue title and narrative.
+def _is_activity_header(upper):
+    return upper.strip().rstrip(":") in [
+        "REVOLVING FUND COUNT",
+        "PETTY CASH FUND",
+        "PETTY CASH FUND COUNT",
+        "CASH ADVANCES COUNT",
+        "CASH ADVANCE COUNT",
+        "DAILY SALES COUNT",
+        "CASH SALES COUNT",
+        "COLLECTION COUNT",
+        "CHANGE FUND COUNT",
+    ]
 
-    The Issue Detail Issue should be the bold/title line only. If an activity
-    title appears before the actual issue title, keep only the actual issue title.
+
+def _is_generic_other(upper):
+    return upper.strip().rstrip(":") in ["OTHER ISSUE", "OTHER ISSUES"]
+
+
+def split_finding_cell(finding_cell):
+    """Split a table finding cell into actual issue title and narrative.
+
+    Rules:
+    - Ignore activity headers such as REVOLVING FUND COUNT.
+    - Do not capture OTHER ISSUE. If another real title appears after it, capture that.
+    - Prefer real finding titles such as UNACCOUNTED CASH / CASH SHORTAGE.
     """
     lines = [
         clean_text(x)
@@ -504,38 +542,92 @@ def split_finding_cell(finding_cell):
     if not lines:
         return "", ""
 
-    title_lines = []
-    narrative_start = 0
+    title_index = None
+    title_parts = []
 
     for i, line in enumerate(lines):
         upper = line.upper().strip().rstrip(":")
-        is_generic_other = upper in ["OTHER ISSUE", "OTHER ISSUES"]
 
-        # Narrative starts once the text is no longer title-like.
-        if upper_ratio(line) < 0.80 and not is_generic_other:
-            narrative_start = i
-            break
+        # Skip activity/task headers.
+        if _is_activity_header(upper):
+            continue
 
-        is_title = (
-            is_generic_other
+        # Skip OTHER ISSUE, but keep scanning for a real title after it.
+        if _is_generic_other(upper):
+            continue
+
+        is_real_title = (
+            any(k in upper for k in PRIORITY_TITLES)
             or any(k in upper for k in TITLE_KEYWORDS)
-            or any(k in upper for k in PRIORITY_TITLES)
+            or "UNACCOUNTED CASH" in upper
             or "MINIMAL CASH OVERAGE" in upper
-            or "CASH ADVANCES COUNT" in upper
+            or "MINIMAL CASH SHORTAGE" in upper
+            or "SKIPPED AND MISSING PCV" in upper
+            or "NO PRE-PRINTED SERIES" in upper
         )
 
-        if is_title and len(line) <= 180:
-            title_lines.append(line.rstrip(":"))
-            narrative_start = i + 1
-        else:
-            narrative_start = i
+        if is_real_title and upper_ratio(line) >= 0.75 and len(line) <= 220:
+            title_index = i
+            title_parts = [line.rstrip(":")]
+
+            # Capture immediately following title continuation lines.
+            j = i + 1
+            while j < len(lines):
+                nxt = lines[j]
+                nxt_upper = nxt.upper().strip().rstrip(":")
+                if _is_activity_header(nxt_upper) or _is_generic_other(nxt_upper):
+                    j += 1
+                    continue
+
+                nxt_is_title_cont = (
+                    upper_ratio(nxt) >= 0.75
+                    and len(nxt) <= 220
+                    and (
+                        any(k in nxt_upper for k in PRIORITY_TITLES)
+                        or any(k in nxt_upper for k in TITLE_KEYWORDS)
+                        or "UNACCOUNTED CASH" in nxt_upper
+                        or "NO CASH SHORTAGE/OVERAGE" in nxt_upper
+                        or "NO CASH SHORTAGE" in nxt_upper
+                        or "NO CASH OVERAGE" in nxt_upper
+                    )
+                )
+                if nxt_is_title_cont:
+                    title_parts.append(nxt.rstrip(":"))
+                    j += 1
+                else:
+                    break
+            narrative_start = j
             break
 
-    if not title_lines:
-        title_lines = [lines[0].rstrip(":")]
-        narrative_start = 1
+    if title_index is None:
+        # If the row begins with OTHER ISSUE and no later title exists,
+        # infer a real issue title from the whole narrative instead of capturing the narrative sentence.
+        first_upper = lines[0].upper().strip().rstrip(":")
+        if _is_generic_other(first_upper):
+            narrative = "\n".join(lines[1:])
+            inferred = infer_issue_title_from_narrative("OTHER ISSUE", narrative)
+            if not _is_generic_other(inferred.upper()):
+                return enhance_issue_title_details(inferred, narrative), narrative
+            return "", ""
 
-    raw_title = normalize_title(" ".join(title_lines))
+        # Fallback: first non-activity line only if it is not generic OTHER ISSUE.
+        for i, line in enumerate(lines):
+            upper = line.upper().strip().rstrip(":")
+            if not _is_activity_header(upper) and not _is_generic_other(upper):
+                title_index = i
+                title_parts = [line.rstrip(":")]
+                narrative_start = i + 1
+                break
+
+    if title_index is None:
+        return "", ""
+
+    raw_title = normalize_title(" ".join(title_parts))
+
+    # If the selected title is still OTHER ISSUE or an activity header, do not capture it.
+    if _is_generic_other(raw_title.upper()) or _is_activity_header(raw_title.upper()):
+        return "", ""
+
     narrative = "\n".join(lines[narrative_start:])
     issue_title = infer_issue_title_from_narrative(raw_title, narrative)
     issue_title = enhance_issue_title_details(issue_title, narrative)
@@ -548,44 +640,150 @@ def normalize_recommendation(rec):
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
 
-    # Remove generic recommendation openers while preserving the actual instruction.
-    rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
+    # Recommendation triggers / connectors
+    rec = re.sub(r"^We recommend(?:ed)?(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
+    rec = re.sub(r"^Also,\s*", "Also, ", rec, flags=re.I)
 
-    # Clean only generic custodian/management phrasing. Keep named auditees such as
-    # "Ms. Jennel Kate Fortin should explain..." because that can be the actual recommendation.
-    rec = re.sub(r"^(the\s+)?custodian\s+to\s+", "", rec, flags=re.I)
-    rec = re.sub(r"^(the\s+)?custodian\s+should\s+", "", rec, flags=re.I)
-    rec = re.sub(r"^management\s+should\s+", "", rec, flags=re.I)
-    rec = re.sub(r"^ensuring\s+that\s+", "Ensure that ", rec, flags=re.I)
+    # Remove named auditee but preserve "should".
+    # Example: "Ms. Angelica Cuevas should provide..." -> "Should provide..."
     rec = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+(?:[A-Z][a-zñÑ.'-]+\s+){1,5}(return|use|update|review|ensure|avoid|explain|prepare|stamp|submit|properly|promptly)\b",
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+should\b",
+        "Should",
+        rec,
+        flags=re.I,
+    )
+
+    # Remove named auditee with "and the Finance Department" while preserving action.
+    rec = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+and\s+the\s+Finance\s+Department\s+maintain\b",
+        "Maintain",
+        rec,
+        flags=re.I,
+    )
+
+    # Remove named auditee followed by comma while preserving the actual clause.
+    # Example: "Ms. Cuevas, if a mistake is made..." -> "If a mistake is made..."
+    rec = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6},\s*",
+        "",
+        rec,
+        flags=re.I,
+    )
+
+    # Remove named auditee for direct action recommendations.
+    rec = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+(return|use|update|review|ensure|avoid|explain|prepare|stamp|submit|properly|promptly|monitor|provide|reconcile|account)\b",
         lambda m: m.group(2).capitalize(),
         rec,
+        flags=re.I,
     )
-    rec = re.sub(r"^(Mr\.|Ms\.|Mrs\.)\s+(?:[A-Z][a-zñÑ.'-]+\s+){1,5}to\s+", "", rec)
+
+    rec = re.sub(r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+to\s+", "", rec, flags=re.I)
+
+    # Generic cleanup.
+    rec = re.sub(r"^(the\s+)?custodian\s+to\s+", "", rec, flags=re.I)
+    rec = re.sub(r"^(the\s+)?custodian\s+should\s+", "Should ", rec, flags=re.I)
+    rec = re.sub(r"^management\s+should\s+", "Should ", rec, flags=re.I)
+    rec = re.sub(r"^ensuring\s+that\s+", "Ensure that ", rec, flags=re.I)
     rec = re.sub(r"^to\s+", "", rec, flags=re.I)
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
 
     rec = clean_text(rec)
-    return rec[0].upper() + rec[1:] if rec else "None"
+    return make_sentence(rec) if rec else "None"
 
+
+def split_recommendations(rec):
+    """Split recommendation cell into Recommendation1 and Recommendation2.
+
+    Keeps continuation paragraphs that start with Also/Furthermore/In addition/etc.
+    """
+    rec = clean_text(rec)
+    if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
+        return "None", "None"
+
+    # Split before recommendation triggers except at the beginning.
+    parts = re.split(
+        r"\s+(?=(?:Also,|Furthermore,|Further,|In addition,|Moreover,|Additionally,|Likewise,|We recommend(?:ed)?|We advise|Please review|(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .'\-]+?\s+should)\b)",
+        rec,
+        flags=re.I,
+    )
+    parts = [normalize_recommendation(p) for p in parts if clean_text(p)]
+    parts = [p for p in parts if p and p != "None"]
+
+    if not parts:
+        return "None", "None"
+
+    rec1 = parts[0]
+    rec2 = " ".join(parts[1:]) if len(parts) > 1 else "None"
+    return rec1, rec2
 
 
 def remove_action_taken(text):
     return re.split(r"Action Taken\s*:", text or "", flags=re.I)[0]
 
 
+def _safe_sentence_split(text):
+    """Split sentences without breaking common titles like Ms./Mr./Mrs."""
+    text = clean_text(text)
+    protected = (
+        text.replace("Ms.", "Ms<prd>")
+            .replace("Mr.", "Mr<prd>")
+            .replace("Mrs.", "Mrs<prd>")
+            .replace("Dr.", "Dr<prd>")
+            .replace("Jr.", "Jr<prd>")
+    )
+    parts = re.split(r"(?<=[.!?])\s+", protected)
+    parts = [p.replace("<prd>", ".") for p in parts]
+    return [clean_text(p) for p in parts if clean_text(p)]
+
+
 def extract_correction_from_text(text):
     m = re.search(r"Action Taken\s*:\s*(.+)", text or "", re.I | re.S)
     if not m:
         return "None"
-    val = clean_text(m.group(1))
-    val = re.sub(r"\bPrepared(?:/Audited)? by:.*", "", val, flags=re.I | re.S)
-    val = clean_text(val)
-    return "None" if not val or val.upper() in ["NONE", "N/A", "NO ACTION TAKEN"] else val
+
+    val = m.group(1)
+
+    # Stop at the next real issue title / recommendation / report ending.
+    stop_patterns = [
+        r"\bNO PRE-PRINTED SERIES\b",
+        r"\b[A-Z][A-Z\s/()–—-]{8,}:\s*$",
+        r"\bPrepared(?:/Audited)? by:",
+        r"\bReviewed by:",
+        r"\bNoted by:",
+        r"\bcc:",
+        r"\bWe recommend\b",
+        r"\bWe advise\b",
+        r"\bPlease review\b",
+    ]
+
+    cut = len(val)
+    for pat in stop_patterns:
+        mm = re.search(pat, val, re.I | re.M)
+        if mm:
+            cut = min(cut, mm.start())
+
+    val = clean_text(val[:cut])
+    if not val or val.upper() in ["NONE", "N/A", "NO ACTION TAKEN"]:
+        return "None"
+
+    # Avoid incomplete fragments such as "We contacted Ms."
+    sentences = _safe_sentence_split(val)
+    full_sentences = []
+    for s in sentences:
+        if re.search(r"\b(Ms|Mr|Mrs)\.$", s):
+            continue
+        full_sentences.append(s)
+
+    if not full_sentences:
+        return "None"
+
+    # Keep up to 2 complete sentences to avoid very long corrections.
+    result = " ".join(full_sentences[:2])
+    return make_sentence(result)
 
 
 def make_sentence(text):
@@ -753,7 +951,7 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
 
     # Cash/Fund/Sales/Collection/Daily Sales/Change Fund shortages and overages:
     # evaluate immateriality first before actual finding category.
-    is_shortage = any(k in issue_lower for k in ["cash shortage", "fund shortage", "collection shortage", "sales shortage", "change fund shortage", "shortage"])
+    is_shortage = any(k in issue_lower for k in ["cash shortage", "fund shortage", "collection shortage", "sales shortage", "change fund shortage", "unaccounted cash", "shortage"])
     is_overage = any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage", "sales overage", "change fund overage", "minimal cash overage", "overage"])
 
     if (is_shortage or is_overage) and is_immaterial_cash_variance(amount, issue, narrative, audit_title):
@@ -769,6 +967,30 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
             return "Cash/Fund/Collection Overage (below ₱1,000.00) -2"
         return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
 
+    # Incomplete details in PCV/receipt/generic receipt are completeness lapses,
+    # not omission/alteration or nonconformity, unless actual alteration/tampering is stated.
+    incomplete_detail_patterns = [
+        "incomplete details in pcv",
+        "incomplete pcv",
+        "incomplete details in petty cash voucher",
+        "incomplete receipt information",
+        "incomplete generic receipt",
+        "incomplete generic receipt information",
+        "incomplete official receipt",
+        "incomplete sales invoice information",
+        "incomplete receipt",
+        "incomplete details in transmittal",
+    ]
+    alteration_patterns = [
+        "altered", "alteration", "tampered", "falsified", "erasure",
+        "changed amount", "changed date", "unauthorized correction",
+        "forged", "fabricated",
+    ]
+    if any(k in issue_lower for k in incomplete_detail_patterns):
+        if any(k in combined for k in alteration_patterns):
+            return "Omission & Alteration Of Details in Documents -7"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
     # Petty Cash specific hard trigger agreed by audit team.
     if "without stamped" in combined and "paid" in combined:
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
@@ -780,17 +1002,20 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
     if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported receipt", "unsupported invoice", "official receipt without", "invoice without"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    if any(k in issue_lower for k in ["incomplete details", "incomplete receipt", "incorrect receipt", "incomplete cv", "incomplete pcv", "incorrect pcv", "omission", "alteration"]):
+    if any(k in issue_lower for k in ["incorrect receipt", "incorrect pcv", "omission", "alteration"]):
+        if any(k in combined for k in ["altered", "alteration", "tampered", "falsified", "erasure", "forged", "fabricated"]):
+            return "Omission & Alteration Of Details in Documents -7"
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required by policy"]):
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
-        if any(k in combined for k in ["missing", "no signature", "no date", "incorrect date", "no supplier", "no owner"]):
-            return "Omission & Alteration Of Details in Documents -7"
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
     if any(k in issue_lower for k in ["late preparation of pcv", "no preparation of pcv", "uncancelled pcv", "inconsistent using of pcv"]):
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required by policy"]):
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
         return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if "skipped and missing pcv" in issue_lower or ("missing pcv" in issue_lower and "skipped" in issue_lower):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
 
     if any(k in issue_lower for k in ["no document used for cash taken from the fund", "cash taken without document", "no document used"]):
         if any(k in combined for k in ["lost document", "missing document", "cannot produce", "unable to locate", "misused document"]):
@@ -866,6 +1091,9 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "required"]):
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
         return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if "skipped and missing pcv" in issue_lower or ("missing pcv" in issue_lower and "skipped" in issue_lower):
+        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
 
     if any(k in issue_lower for k in ["no document used for cash taken from the fund", "cash taken without document", "no document used"]):
         if any(k in combined for k in ["lost document", "missing document", "cannot produce", "unable to locate", "misused document"]):
@@ -968,17 +1196,31 @@ def extract_recommendation_from_segment(segment):
         return "None"
 
     # In table-based PDFs, the recommendation cell is already separated.
-    # Capture it directly even if it starts with a name (e.g., Ms. Jennel Kate Fortin should...).
+    # Capture direct "should" recommendation styles, "Also" paragraphs, and normal recommendation phrases.
     rec = re.split(r"Action Taken\s*:", text, flags=re.I)[0]
-    return normalize_recommendation(rec)
+    rec1, rec2 = split_recommendations(rec)
+
+    # Store rec2 temporarily in a module-level variable only for row builder fallback if needed.
+    # Main extraction uses extract_recommendation_pair below.
+    return rec1
 
 
+def extract_recommendation_pair(segment):
+    text = clean_text(segment)
+    if not text or text.upper() in ["NONE", "NONE.", "N/A"]:
+        return "None", "None"
+
+    rec = re.split(r"Action Taken\s*:", text, flags=re.I)[0]
+    return split_recommendations(rec)
 
 
 def concise_text(text, max_words=25, field="general"):
     """Make extracted text concise and understandable without changing the audit thought."""
     text = clean_text(text)
     if not text or text.upper() in ["NONE", "N/A", "NONE."]:
+        return "None"
+
+    if field == "correction" and re.search(r"\b(Ms|Mr|Mrs)\.?$", text, re.I):
         return "None"
 
     text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
@@ -999,6 +1241,13 @@ def concise_text(text, max_words=25, field="general"):
     words = text.split()
     if len(words) <= max_words:
         return make_sentence(text)
+
+    if field == "correction":
+        # Do not split at Ms./Mr./Mrs. abbreviations.
+        sentences = _safe_sentence_split(text) if "_safe_sentence_split" in globals() else []
+        if sentences and len(sentences[0].split()) <= max_words:
+            return make_sentence(sentences[0].strip())
+        return make_sentence(" ".join(words[:max_words]).rstrip(",;") + "...")
 
     sentences = re.split(r"(?<=[.!?])\s+", text)
     if sentences and len(sentences[0].split()) <= max_words:
@@ -1151,7 +1400,7 @@ def extract_finding_rows_from_pdf(pdf_file):
                         continue
 
                     issue_title, narrative = split_finding_cell(finding_cell)
-                    recommendation = extract_recommendation_from_segment(rec_cell)
+                    recommendation, recommendation2 = extract_recommendation_pair(rec_cell)
 
                     if not clean_text(issue_title):
                         continue
@@ -1161,7 +1410,7 @@ def extract_finding_rows_from_pdf(pdf_file):
                         "issue": issue_title,
                         "narrative": remove_action_taken(narrative),
                         "recommendation1": recommendation,
-                        "recommendation2": "None",
+                        "recommendation2": recommendation2,
                         "explanation": extract_explanation_from_narrative(narrative),
                         "correction": extract_correction_from_text(narrative + "\n" + clean_text(rec_cell)),
                     })
@@ -1184,12 +1433,13 @@ def extract_finding_rows_from_pdf(pdf_file):
         narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
         issue_title = infer_issue_title_from_narrative(entry["title"], narrative_segment)
 
+        rec1, rec2 = extract_recommendation_pair(segment)
         fallback_rows.append({
             "issue_no": str(idx + 1),
             "issue": issue_title,
             "narrative": remove_action_taken(narrative_segment),
-            "recommendation1": extract_recommendation_from_segment(segment),
-            "recommendation2": "None",
+            "recommendation1": rec1,
+            "recommendation2": rec2,
             "explanation": extract_explanation_from_narrative(narrative_segment),
             "correction": extract_correction_from_text(segment),
         })
