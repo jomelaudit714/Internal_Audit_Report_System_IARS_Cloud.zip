@@ -172,10 +172,70 @@ def find_after_label(text, labels):
     return "None"
 
 
+def ocr_pdf_text(pdf_file, dpi=180):
+    """OCR fallback for scanned/image PDFs.
+
+    Requires system package tesseract-ocr and Python packages PyMuPDF, Pillow, pytesseract.
+    If OCR dependencies are unavailable, returns an empty string rather than crashing.
+    """
+    try:
+        import fitz  # PyMuPDF
+        from PIL import Image
+        import pytesseract
+    except Exception:
+        return ""
+
+    try:
+        pdf_file.seek(0)
+        data = pdf_file.read()
+        doc = fitz.open(stream=data, filetype="pdf")
+        all_text = []
+
+        for page_no in range(len(doc)):
+            page = doc.load_page(page_no)
+            zoom = dpi / 72
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            # OCR config favors tables and sparse text blocks.
+            txt = pytesseract.image_to_string(
+                img,
+                config="--oem 3 --psm 6"
+            )
+            all_text.append(f"\n--- OCR PAGE {page_no + 1} ---\n{txt}")
+
+        pdf_file.seek(0)
+        return "\n".join(all_text).replace("\r", "\n")
+    except Exception:
+        try:
+            pdf_file.seek(0)
+        except Exception:
+            pass
+        return ""
+
+
 def extract_all_text(pdf_file):
+    """Extract text from searchable PDF; use OCR fallback when no useful text is found."""
     pdf_file.seek(0)
-    with pdfplumber.open(pdf_file) as pdf:
-        text = "\n".join((page.extract_text() or "") for page in pdf.pages)
+    text = ""
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            text = "\n".join((page.extract_text() or "") for page in pdf.pages)
+    except Exception:
+        text = ""
+
+    pdf_file.seek(0)
+    text = (text or "").replace("\r", "\n")
+
+    # OCR fallback for scanned/image PDFs.
+    # The threshold avoids OCR for normal text PDFs.
+    if len(clean_text(text)) < 100:
+        ocr_text = ocr_pdf_text(pdf_file)
+        if len(clean_text(ocr_text)) > len(clean_text(text)):
+            text = ocr_text
+
     pdf_file.seek(0)
     return text.replace("\r", "\n")
 
@@ -1368,111 +1428,530 @@ def remove_title_from_segment(segment, title):
     return result
 
 
-def extract_finding_rows_from_pdf(pdf_file):
+
+def canonical_employee_name(master_df, raw_name):
+    """Map raw/handwritten auditee name to master employee ID and full name."""
+    emp_id, emp_name = match_employee(master_df, raw_name)
+    return emp_id, emp_name
+
+
+def canonical_auditor_name(auditors_df, raw_name):
+    """Map raw/handwritten auditor text to canonical auditor and user."""
+    raw_name = clean_text(raw_name)
+    if not raw_name:
+        return "None", "None"
+
+    area_norm = normalize_for_match(raw_name)
+    matches = []
+    for rec in load_auditor_records(auditors_df):
+        norm_name = rec["norm"]
+        tokens = [t for t in norm_name.split() if len(t) > 1]
+
+        score = 0
+        if norm_name in area_norm:
+            score += 10
+        score += sum(1 for t in tokens if t in area_norm)
+
+        # Allow first-name or nickname style handwritten cues, but require at least 1 token.
+        if score > 0:
+            matches.append((score, len(norm_name), rec["auditor"], rec["user"]))
+
+    if matches:
+        _, _, auditor, user = sorted(matches, reverse=True)[0]
+        return auditor, user
+
+    return raw_name, raw_name.split()[0] if raw_name else "None"
+
+
+def extract_inline_tag(line, tag):
+    """Extract handwritten/typed tag values such as Task ID: 001 or Auditor: Sarina.
+
+    Avoids treating job titles like "Internal Auditor - Finance" as handwritten Auditor tags.
+    """
+    line_clean = clean_text(line)
+    if tag.lower() == "auditor" and re.search(r"\binternal\s+auditor\b", line_clean, re.I):
+        return ""
+
+    # Prefer tags at beginning of OCR line or clearly handwritten labels anywhere.
+    pat = rf"(?:^|\s)({re.escape(tag)})\s*[:;]\s*([^|,\n]+)"
+    m = re.search(pat, line_clean, re.I)
+
+    # Task ID handwriting often becomes "TASK 1D . 002" or "TAK ID: 002"
+    if not m and tag.lower() in ["task id", "taskid"]:
+        m2 = re.search(r"\bTA(?:S)?K\s*[I1]D\s*[\.:;\-]?\s*([A-Za-z0-9\-]+)", line_clean, re.I)
+        if m2:
+            return clean_text(m2.group(1))
+
+    if m:
+        val = clean_text(m.group(2))
+        val = re.split(r"\b(?:Auditee|Auditor|Task\s*ID|Frequency\s*Rate|Reaction)\s*[:;\-]", val, flags=re.I)[0]
+        return clean_text(val)
+
+    return ""
+
+
+def extract_context_tags(text, master_df=None, auditors_df=None):
+    """Extract carry-forward handwritten/typed context tags from OCR/plain text.
+
+    Tags recognized:
+    - Auditee:
+    - Auditor:
+    - Task ID:
+    - Frequency Rate:
+    - Reaction:
+
+    A tag applies to all succeeding issue numbers until a new tag appears.
+    """
+    contexts = {}
+    current = {
+        "auditee_raw": "",
+        "auditee_id": "",
+        "auditee_name": "",
+        "auditor_raw": "",
+        "auditor": "",
+        "auditor_user": "",
+        "task_id": "",
+        "frequency": "",
+        "reaction": "",
+    }
+
+    lines = [clean_text(x) for x in (text or "").splitlines() if clean_text(x)]
+    current_issue = None
+
+    for line in lines:
+        # Detect issue number at line start or standalone.
+        m_issue = re.match(r"^\s*(\d{1,2})\s*[\.\)]\s*(.*)", line)
+        if m_issue:
+            current_issue = m_issue.group(1)
+            contexts.setdefault(current_issue, current.copy())
+
+        auditee_val = extract_inline_tag(line, "Auditee")
+        auditor_val = extract_inline_tag(line, "Auditor")
+        task_val = extract_inline_tag(line, "Task ID") or extract_inline_tag(line, "TaskID")
+        freq_val = extract_inline_tag(line, "Frequency Rate") or extract_inline_tag(line, "Frequency")
+        react_val = extract_inline_tag(line, "Reaction")
+
+        # Also tolerate OCR/handwritten variants.
+        if not task_val:
+            m = re.search(r"\bTASK\s*ID\s*[:;\-]?\s*([A-Za-z0-9\-]+)", line, re.I)
+            if m:
+                task_val = clean_text(m.group(1))
+
+        if auditee_val:
+            current["auditee_raw"] = auditee_val
+            emp_id, emp_name = canonical_employee_name(master_df, auditee_val)
+            current["auditee_id"] = emp_id
+            current["auditee_name"] = emp_name
+
+        if auditor_val:
+            current["auditor_raw"] = auditor_val
+            auditor, user = canonical_auditor_name(auditors_df, auditor_val)
+            current["auditor"] = auditor
+            current["auditor_user"] = user
+
+        if task_val:
+            current["task_id"] = clean_text(task_val)
+
+        if freq_val:
+            current["frequency"] = clean_text(freq_val)
+
+        if react_val:
+            current["reaction"] = clean_text(react_val)
+
+        if current_issue:
+            contexts[current_issue] = current.copy()
+
+    return contexts
+
+
+def apply_carry_forward_context(rows, text, master_df=None, auditors_df=None):
+    """Apply handwritten/typed context tags to extracted rows by issue number."""
+    contexts = extract_context_tags(text, master_df, auditors_df)
+    if not contexts:
+        return rows
+
+    last_context = {}
+    updated = []
+
+    for row in rows:
+        issue_no = clean_text(row.get("issue_no", ""))
+        ctx = contexts.get(issue_no) or last_context
+        if contexts.get(issue_no):
+            last_context = contexts.get(issue_no)
+
+        if ctx:
+            if ctx.get("auditee_name"):
+                row["auditee_name_override"] = ctx.get("auditee_name")
+                row["auditee_id_override"] = ctx.get("auditee_id") or "None"
+            if ctx.get("auditor"):
+                row["auditor_override"] = ctx.get("auditor")
+                row["auditor_user_override"] = ctx.get("auditor_user")
+            if ctx.get("task_id"):
+                row["task_id_override"] = ctx.get("task_id")
+            if ctx.get("frequency"):
+                row["frequency_override"] = ctx.get("frequency")
+            if ctx.get("reaction"):
+                row["reaction_override"] = ctx.get("reaction")
+
+        updated.append(row)
+
+    return updated
+
+
+def _ocr_title_from_line(line):
+    """Return normalized title when an OCR line appears to be an audit finding title."""
+    s = clean_text(line)
+    u = s.upper().strip().rstrip(":")
+    if not s:
+        return ""
+
+    # Normalize frequent OCR errors / chopped first letters.
+    u_norm = u
+    u_norm = re.sub(r"^\W+", "", u_norm)
+    u_norm = u_norm.replace("ONSISTENT USING OF PCV", "INCONSISTENT USING OF PCV")
+    u_norm = u_norm.replace("ATE PREPARATION OF PCV", "LATE PREPARATION OF PCV")
+    u_norm = re.sub(r"^(AISE|A1SE|RISE)\s+USED FOR CASH TAKEN FROM THE FUND", "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND", u_norm)
+    u_norm = u_norm.replace("CASH ADVANCES COUNT", "CASH ADVANCES COUNT")
+
+    # If line contains OTHER ISSUE with a real title, capture the real title only.
+    m_other = re.search(r"OTHER ISSUE\s*:\s*(.+)", u_norm)
+    if m_other:
+        rest = clean_text(m_other.group(1)).upper().rstrip(":")
+        if rest:
+            return rest
+        return ""
+
+    # Prefer specific shortage/overage/no finding title embedded in a header line.
+    m = re.search(r"(NO CASH SHORTAGE/OVERAGE|UNACCOUNTED CASH\s*[:;\-]?\s*\(?P?[0-9,.\-]+\)?|CASH SHORTAGE\s*[:;\-]?\s*\(?P?[0-9,.\-]+\)?|CASH OVERAGE\s*[:;\-]?\s*P?[0-9,.]+|MINIMAL CASH SHORTAGE\s*[:;\-]?\s*\(?P?[0-9,.\-]+\)?|MINIMAL CASH OVERAGE\s*[:;\-]?\s*P?[0-9,.]+)", u_norm)
+    if m:
+        return clean_text(m.group(1)).upper()
+
+    title_patterns = [
+        "INCOMPLETE CV INFORMATION",
+        "INCOMPLETE PCV INFORMATION",
+        "INCOMPLETE DETAILS IN PCV",
+        "INCONSISTENT USING OF PCV",
+        "LATE PREPARATION OF PCV",
+        "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND",
+        "INCOMPLETE RECEIPT INFORMATION",
+        "INCORRECT RECEIPT INFORMATION",
+        "USE OF CASH ADVANCE OUTSIDE ITS PURPOSE",
+        "SKIPPED AND MISSING PCV",
+        "NO DAILY BALANCING / MONITORING OF FUND",
+        "NO PRE-PRINTED SERIES AND USING GENERIC TRANSMITTAL FORM",
+    ]
+
+    for p in title_patterns:
+        if p in u_norm:
+            return p
+
+    # Treat CASH ADVANCES COUNT as title only when no more specific cash title is present.
+    if "CASH ADVANCES COUNT" in u_norm:
+        return "CASH ADVANCES COUNT"
+
+    return ""
+
+
+def _split_ocr_recommendation(chunk_text):
+    """Split OCR chunk into finding narrative and recommendation text."""
+    text = clean_text(chunk_text)
+    if not text:
+        return "", "None"
+
+    # Recommendation triggers. Include "When an unofficial receipt..." style recommendation.
+    triggers = [
+        r"\bPlease review\b",
+        r"\bWe recommend(?:ed)?\b",
+        r"\bWe advise\b",
+        r"\bShould provide\b",
+        r"\bShould explain\b",
+        r"\bShould return\b",
+        r"\bMs\.?\s+[A-Z][A-Za-z .'\-]+\s+should\b",
+        r"\bWhen an unofficial receipt is to\b",
+        r"\bWhen a generic receipt is to\b",
+    ]
+
+    cut = len(text)
+    for pat in triggers:
+        m = re.search(pat, text, re.I)
+        if m:
+            cut = min(cut, m.start())
+
+    narrative = clean_text(text[:cut])
+    rec = clean_text(text[cut:]) if cut < len(text) else "None"
+
+    return narrative, rec or "None"
+
+
+
+def _employee_records(master_df):
+    """Return list of employees for OCR auditee-title matching."""
+    records = []
+    if master_df is None or getattr(master_df, "empty", True):
+        return records
+
+    name_col = find_column(master_df, ["full name", "employee name", "name"])
+    id_col = find_column(master_df, ["employee id", "employee no", "id no", "id"])
+    if not name_col:
+        return records
+
+    for _, r in master_df.iterrows():
+        name = clean_text(r.get(name_col, ""))
+        emp_id = clean_text(r.get(id_col, "None")) if id_col else "None"
+        if name:
+            records.append({
+                "name": name,
+                "id": emp_id or "None",
+                "norm": normalize_for_match(name),
+                "tokens": [t for t in normalize_for_match(name).split() if len(t) > 1],
+            })
+    return records
+
+
+def detect_auditee_header_from_line(line, master_df=None):
+    """Detect auditee name printed/handwritten immediately above an issue title.
+
+    Must look like:
+    EMERITO BONDOC - P200,000.00
+    ANTOINETTE JOY SAMBRANO ~ P170,000.00
+    """
+    raw = clean_text(line)
+    if not raw:
+        return None
+
+    # Reject references, dates, vouchers, and narrative names.
+    if re.search(r"\b(Mr|Ms|Mrs)\.?\b", raw, re.I):
+        return None
+    if re.search(r"\b(CV|PCV|CA)#?", raw, re.I):
+        return None
+    if re.match(r"^[0-9(]", raw):
+        return None
+    if re.search(r"\b(October|November|December|January|February|March|April|May|June|July|August|September)\b", raw, re.I):
+        return None
+
+    # Must contain amount marker after dash/tilde.
+    if not re.search(r"[-–—~]\s*(?:P|₱)?\s*[0-9,]+(?:\.[0-9]{2})?", raw, re.I):
+        return None
+    if len(raw) > 120:
+        return None
+
+    # Extract part before the amount.
+    cleaned = re.sub(r"\bTA(?:S)?K\s*[I1]D\b.*?(?=[A-Z][A-Z]+\s+[A-Z])", "", raw, flags=re.I)
+    cleaned = re.sub(r"\bAUDITOR\b.*?(?=[A-Z][A-Z]+\s+[A-Z])", "", cleaned, flags=re.I)
+    left = re.split(r"\s+[-–—~]\s*(?:P|₱)?\s*[0-9,]+(?:\.[0-9]{2})?", cleaned, maxsplit=1)[0]
+    left = clean_text(left).strip(" .,:;()")
+
+    # Must begin with letters and be mostly uppercase/name-like.
+    if not re.match(r"^[A-Za-zñÑ]", left):
+        return None
+    if upper_ratio(left) < 0.65:
+        return None
+
+    left_norm = normalize_for_match(left)
+    if len(left_norm.split()) < 2:
+        return None
+
+    best = None
+    best_score = 0
+    for rec in _employee_records(master_df):
+        tokens = rec["tokens"]
+        if not tokens:
+            continue
+        score = sum(1 for t in tokens if t in left_norm)
+        if len(tokens) >= 2 and tokens[0] in left_norm and tokens[-1] in left_norm:
+            score += 4
+        if score > best_score:
+            best_score = score
+            best = rec
+
+    if best and best_score >= 3:
+        return {"id": best["id"], "name": best["name"]}
+
+    return {"id": "None", "name": clean_text(left.title())}
+
+
+def apply_ocr_auditee_carry_forward(rows):
+    """For OCR fallback rows, apply auditee detected above issue title."""
+    current_id = ""
+    current_name = ""
+    updated = []
+
+    for row in rows:
+        aud_id = clean_text(row.get("ocr_auditee_id", ""))
+        aud_name = clean_text(row.get("ocr_auditee_name", ""))
+
+        if aud_name:
+            current_id = aud_id or "None"
+            current_name = aud_name
+
+        if current_name:
+            row["auditee_id_override"] = current_id or "None"
+            row["auditee_name_override"] = current_name
+
+        updated.append(row)
+
+    return updated
+
+def extract_rows_from_text_fallback(text, master_df=None):
+    """Fallback row extraction from OCR/plain text.
+
+    Priority for multiple auditees:
+    If an auditee name is indicated above an issue title, that auditee applies
+    to that issue and all subsequent issues until another auditee name appears.
+    Auditor/Task ID/Frequency/Reaction tags remain handled separately.
+    """
+    body = crop_report_body(text)
+    raw_lines = [clean_text(x) for x in body.splitlines() if clean_text(x)]
+
+    lines = []
+    for line in raw_lines:
+        if re.match(r"^(TO|FROM|RE|DATE|REF|AUDITEE NAME|POSITION|COMPANY/DEPT|PERIOD\s*DATE|SCOPE|OBJECTIVE)\b", line, re.I):
+            continue
+        if re.match(r"^(Prepared/Audited by|Prepared by|Reviewed by|Noted by|cc:|Audit/file)", line, re.I):
+            break
+        lines.append(line)
+
+    starts = []
+    current_auditee = None
+
+    for i, line in enumerate(lines):
+        aud = detect_auditee_header_from_line(line, master_df)
+        if aud:
+            current_auditee = aud
+
+        title = _ocr_title_from_line(line)
+        if title:
+            starts.append((i, title, current_auditee.copy() if current_auditee else None))
+
+    deduped = []
+    for item in starts:
+        if deduped and item[0] - deduped[-1][0] <= 1 and item[1] == deduped[-1][1]:
+            continue
+        deduped.append(item)
+    starts = deduped
+
+    rows = []
+    for idx, (start_i, title, aud_ctx) in enumerate(starts):
+        end_i = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
+        chunk_lines = lines[start_i:end_i]
+
+        first_line = chunk_lines[0]
+        first_title = _ocr_title_from_line(first_line)
+        remainder = first_line
+
+        if first_title:
+            # Remove any auditee header before title and the title itself.
+            first_upper = first_line.upper()
+            pos = first_upper.find(first_title)
+            if pos >= 0:
+                remainder = clean_text(first_line[pos + len(first_title):])
+            else:
+                remainder = ""
+
+        chunk_body = "\n".join(([remainder] if remainder else []) + chunk_lines[1:])
+        narrative, rec_text = _split_ocr_recommendation(chunk_body)
+
+        issue_title = enhance_issue_title_details(title, narrative)
+
+        if _is_activity_header(issue_title.upper()) or _is_generic_other(issue_title.upper()):
+            continue
+
+        rec1, rec2 = extract_recommendation_pair(rec_text)
+
+        row = {
+            "issue_no": str(len(rows) + 1),
+            "issue": issue_title,
+            "narrative": remove_action_taken(narrative),
+            "recommendation1": rec1,
+            "recommendation2": rec2,
+            "explanation": extract_explanation_from_narrative(narrative),
+            "correction": extract_correction_from_text(chunk_body + "\n" + rec_text),
+        }
+
+        if aud_ctx:
+            row["ocr_auditee_id"] = aud_ctx.get("id", "None")
+            row["ocr_auditee_name"] = aud_ctx.get("name", "")
+
+        rows.append(row)
+
+    rows = apply_ocr_auditee_carry_forward(rows)
+    return rows
+
+
+def extract_finding_rows_from_pdf(pdf_file, full_text=None, master_df=None, auditors_df=None):
     """Extract finding rows from PDF.
 
-    Primary method uses table extraction so Audit Findings and Recommendation stay separated.
-    Fallback method uses title-line extraction for irregular PDFs.
+    Primary method:
+    - pdfplumber table extraction for searchable PDFs.
+
+    Fallback method:
+    - OCR/plain text line extraction for scanned/image PDFs.
+    - Handwritten/typed tags are applied as carry-forward context:
+      Auditee:, Auditor:, Task ID:, Frequency Rate:, Reaction:
     """
     rows = []
     pdf_file.seek(0)
 
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            for table in page.extract_tables() or []:
-                for row in table:
-                    if not row:
-                        continue
+    # Primary table extraction for searchable PDFs.
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                for table in page.extract_tables() or []:
+                    for row in table:
+                        if not row:
+                            continue
 
-                    cells = [clean_cell_preserve(c) for c in row]
-                    issue_no = None
-                    for c in cells:
-                        m = re.fullmatch(r"\s*(\d{1,2})\.?\s*", clean_text(c))
-                        if m:
-                            issue_no = m.group(1)
-                            break
+                        cells = [clean_cell_preserve(c) for c in row]
+                        issue_no = None
+                        for c in cells:
+                            m = re.fullmatch(r"\s*(\d{1,2})\.?\s*", clean_text(c))
+                            if m:
+                                issue_no = m.group(1)
+                                break
 
-                    if not issue_no:
-                        continue
+                        if not issue_no:
+                            continue
 
-                    non_empty = [c for c in cells if clean_text(c)]
-                    if len(non_empty) < 2:
-                        continue
+                        non_empty = [c for c in cells if clean_text(c)]
+                        if len(non_empty) < 2:
+                            continue
 
-                    if clean_text(non_empty[0]).rstrip(".") != issue_no:
-                        continue
+                        if clean_text(non_empty[0]).rstrip(".") != issue_no:
+                            continue
 
-                    finding_cell = non_empty[1] if len(non_empty) >= 2 else ""
-                    rec_cell = non_empty[2] if len(non_empty) >= 3 else "None"
+                        finding_cell = non_empty[1] if len(non_empty) >= 2 else ""
+                        rec_cell = non_empty[2] if len(non_empty) >= 3 else "None"
 
-                    if not clean_text(finding_cell):
-                        continue
+                        if not clean_text(finding_cell):
+                            continue
 
-                    issue_title, narrative = split_finding_cell(finding_cell)
-                    recommendation, recommendation2 = extract_recommendation_pair(rec_cell)
+                        issue_title, narrative = split_finding_cell(finding_cell)
+                        recommendation, recommendation2 = extract_recommendation_pair(rec_cell)
 
-                    if not clean_text(issue_title):
-                        continue
+                        if not clean_text(issue_title):
+                            continue
 
-                    rows.append({
-                        "issue_no": issue_no,
-                        "issue": issue_title,
-                        "narrative": remove_action_taken(narrative),
-                        "recommendation1": recommendation,
-                        "recommendation2": recommendation2,
-                        "explanation": extract_explanation_from_narrative(narrative),
-                        "correction": extract_correction_from_text(narrative + "\n" + clean_text(rec_cell)),
-                    })
+                        rows.append({
+                            "issue_no": issue_no,
+                            "issue": issue_title,
+                            "narrative": remove_action_taken(narrative),
+                            "recommendation1": recommendation,
+                            "recommendation2": recommendation2,
+                            "explanation": extract_explanation_from_narrative(narrative),
+                            "correction": extract_correction_from_text(narrative + "\n" + clean_text(rec_cell)),
+                        })
+    except Exception:
+        rows = []
 
     pdf_file.seek(0)
-    if rows:
-        return rows
 
-    # Fallback for irregular PDFs.
-    text = extract_all_text(pdf_file)
-    body = crop_report_body(text)
-    lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
-    entries = find_issue_title_entries(lines)
-    fallback_rows = []
+    # OCR/text fallback if table extraction failed.
+    if not rows:
+        text = full_text if full_text is not None else extract_all_text(pdf_file)
+        rows = extract_rows_from_text_fallback(text, master_df)
 
-    for idx, entry in enumerate(entries):
-        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
-        segment_lines = lines[entry["start"]:next_start]
-        segment = "\n".join(segment_lines)
-        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
-        issue_title = infer_issue_title_from_narrative(entry["title"], narrative_segment)
-
-        rec1, rec2 = extract_recommendation_pair(segment)
-        fallback_rows.append({
-            "issue_no": str(idx + 1),
-            "issue": issue_title,
-            "narrative": remove_action_taken(narrative_segment),
-            "recommendation1": rec1,
-            "recommendation2": rec2,
-            "explanation": extract_explanation_from_narrative(narrative_segment),
-            "correction": extract_correction_from_text(segment),
-        })
-
-    return fallback_rows
-
-
-    for idx, entry in enumerate(entries):
-        start = entry["start"]
-        next_start = entries[idx + 1]["start"] if idx + 1 < len(entries) else len(lines)
-        segment_lines = lines[start:next_start]
-        segment = "\n".join(segment_lines)
-        issue_title = entry["title"]
-        narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
-
-        rows.append({
-            "issue_no": str(idx + 1),
-            "issue": issue_title,
-            "narrative": remove_action_taken(narrative_segment),
-            "recommendation1": extract_recommendation_from_segment(segment),
-            "recommendation2": "None",
-            "explanation": extract_explanation_from_narrative(narrative_segment),
-            "correction": extract_correction_from_text(segment),
-        })
+    text = full_text if full_text is not None else extract_all_text(pdf_file)
+    rows = apply_carry_forward_context(rows, text, master_df, auditors_df)
 
     return rows
 
@@ -1488,13 +1967,50 @@ def classify_audit_type(text):
     return "Operations Audit" if any(t in text.lower() for t in sales_terms) else "Financial Audit"
 
 
+
+def split_possible_auditees(auditee_text):
+    auditee_text = clean_text(auditee_text)
+    if not auditee_text or auditee_text == "None":
+        return []
+    parts = re.split(r"\s+(?:and|/|&)\s+", auditee_text, flags=re.I)
+    return [clean_text(p) for p in parts if clean_text(p)]
+
+
+def infer_row_auditee_from_context(master_df, header_auditee, issue_title, narrative):
+    """For multiple-auditee reports, infer the row auditee from issue/narrative text."""
+    candidates = split_possible_auditees(header_auditee)
+    if len(candidates) <= 1:
+        return match_employee(master_df, header_auditee)
+
+    combined = normalize_for_match(f"{issue_title} {narrative}")
+    best = None
+    best_score = -1
+
+    for cand in candidates:
+        norm = normalize_for_match(cand)
+        tokens = [t for t in norm.split() if len(t) > 1]
+        score = 0
+        for t in tokens:
+            if t in combined:
+                score += 1
+        if tokens and tokens[-1] in combined:
+            score += 2
+        if score > best_score:
+            best = cand
+            best_score = score
+
+    if best and best_score > 0:
+        return match_employee(master_df, best)
+
+    return match_employee(master_df, header_auditee)
+
 def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
     text = extract_all_text(pdf_file)
     header = extract_header(text)
     emp_id, emp_name = match_employee(master_df, header["auditee_name"])
     auditor_default = prepared_by_auditor(text, auditors_df)
     audit_type = classify_audit_type(text)
-    items = extract_finding_rows_from_pdf(pdf_file)
+    items = extract_finding_rows_from_pdf(pdf_file, text, master_df, auditors_df)
 
     manual_map = {}
     if manual_df is not None and not manual_df.empty:
@@ -1507,8 +2023,8 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
 
     for row_no, item in enumerate(items, 1):
         manual = manual_map.get(item["issue_no"])
-        task_id = header["task_id"]
-        auditor = auditor_default
+        task_id = clean_text(item.get("task_id_override", "")) or header["task_id"]
+        auditor = clean_text(item.get("auditor_override", "")) or auditor_default
 
         issue_title = infer_issue_title_from_narrative(item["issue"], item["narrative"])
         issue_title = enhance_issue_title_details(issue_title, item["narrative"])
@@ -1522,11 +2038,27 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
         reaction = detect_reaction(issue_title, item["narrative"], recommendation1)
         frequency = detect_frequency(issue_title, item["narrative"], recommendation1)
 
+        if item.get("reaction_override"):
+            reaction = clean_text(item.get("reaction_override", "")) or reaction
+        if item.get("frequency_override"):
+            frequency = clean_text(item.get("frequency_override", "")) or frequency
+
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
             auditor = clean_text(manual.get("Auditor", "")) or auditor
             reaction = clean_text(manual.get("Reaction", "")) or reaction
             frequency = clean_text(manual.get("Frequency", "")) or frequency
+
+        if clean_text(item.get("auditee_name_override", "")):
+            row_emp_id = clean_text(item.get("auditee_id_override", "")) or "None"
+            row_emp_name = clean_text(item.get("auditee_name_override", "")) or emp_name
+        else:
+            row_emp_id, row_emp_name = infer_row_auditee_from_context(
+                master_df,
+                header.get("auditee_name", ""),
+                issue_title,
+                item.get("narrative", ""),
+            )
 
         findings = classify_finding(
             issue_title,
@@ -1554,7 +2086,7 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
             "findings": findings,
             "row": [
                 row_no, date.today().isoformat(), audit_type, header["date_reported"],
-                header["audit_reference"], emp_id, emp_name, task_id or "None",
+                header["audit_reference"], row_emp_id, row_emp_name, task_id or "None",
                 header["scope_date"], header["year"], findings,
                 issue_title,  # Issue Detail Issue = exact issue title.
                 explanation or "None", recommendation1 or "None",
@@ -1589,10 +2121,15 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
     rows = []
     for row_no, item in enumerate(items, 1):
         manual = manual_map.get(item["issue_no"])
-        task_id = header["task_id"]
-        auditor = auditor_default
+        task_id = clean_text(item.get("task_id_override", "")) or header["task_id"]
+        auditor = clean_text(item.get("auditor_override", "")) or auditor_default
         reaction = detect_reaction(item["issue"], item["narrative"], item["recommendation1"])
         frequency = detect_frequency(item["issue"], item["narrative"], item["recommendation1"])
+
+        if item.get("reaction_override"):
+            reaction = clean_text(item.get("reaction_override", "")) or reaction
+        if item.get("frequency_override"):
+            frequency = clean_text(item.get("frequency_override", "")) or frequency
 
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
