@@ -389,6 +389,34 @@ def infer_issue_title_from_narrative(issue_title, narrative):
 
 
 
+def enhance_issue_title_details(issue_title, narrative):
+    """Add missing-detail qualifier to generic issue titles when the narrative identifies the exact field."""
+    title = clean_text(issue_title)
+    lower_title = title.lower()
+    text = clean_text(narrative)
+    lower = text.lower()
+
+    if lower_title == "incomplete details in pcv":
+        fields = []
+        quoted = re.findall(r"[“\"]([^”\"]+)[”\"]", text)
+        for q in quoted:
+            q_clean = clean_text(q).strip()
+            if q_clean and len(q_clean) <= 40:
+                fields.append(q_clean.upper())
+
+        if "payee" in lower and "PAYEE" not in fields:
+            fields.append("PAYEE")
+        if "approved by" in lower and "APPROVED BY" not in fields:
+            fields.append("APPROVED BY")
+        if "signature" in lower and "SIGNATURE" not in fields and not fields:
+            fields.append("SIGNATURE")
+
+        if fields:
+            return f"{title} - {', '.join(dict.fromkeys(fields))}"
+
+    return title
+
+
 def extract_title_prefix(line):
     """Return the bold/title text at the beginning of a PDF line, before recommendation text if merged."""
     s = clean_text(line).strip().strip(":")
@@ -510,6 +538,7 @@ def split_finding_cell(finding_cell):
     raw_title = normalize_title(" ".join(title_lines))
     narrative = "\n".join(lines[narrative_start:])
     issue_title = infer_issue_title_from_narrative(raw_title, narrative)
+    issue_title = enhance_issue_title_details(issue_title, narrative)
 
     return issue_title, narrative
 
@@ -519,21 +548,24 @@ def normalize_recommendation(rec):
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
 
-    # Remove recommendation openers while preserving the actual action.
+    # Remove generic recommendation openers while preserving the actual instruction.
     rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
 
-    # Remove unnecessary subject phrases.
+    # Clean only generic custodian/management phrasing. Keep named auditees such as
+    # "Ms. Jennel Kate Fortin should explain..." because that can be the actual recommendation.
     rec = re.sub(r"^(the\s+)?custodian\s+to\s+", "", rec, flags=re.I)
     rec = re.sub(r"^(the\s+)?custodian\s+should\s+", "", rec, flags=re.I)
     rec = re.sub(r"^management\s+should\s+", "", rec, flags=re.I)
+    rec = re.sub(r"^ensuring\s+that\s+", "Ensure that ", rec, flags=re.I)
     rec = re.sub(
-        r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain|prepare|stamp)\b",
+        r"^(Mr\.|Ms\.|Mrs\.)\s+(?:[A-Z][a-zñÑ.'-]+\s+){1,5}(return|use|update|review|ensure|avoid|explain|prepare|stamp|submit|properly|promptly)\b",
         lambda m: m.group(2).capitalize(),
         rec,
-        flags=re.I,
     )
+    rec = re.sub(r"^(Mr\.|Ms\.|Mrs\.)\s+(?:[A-Z][a-zñÑ.'-]+\s+){1,5}to\s+", "", rec)
+    rec = re.sub(r"^to\s+", "", rec, flags=re.I)
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
 
@@ -571,8 +603,8 @@ def make_sentence(text):
     return text
 
 
-def simplify_auditee_explanation(text):
-    """Convert auditee explanation into a concise, readable sentence."""
+def concise_if_long(text, max_words=50):
+    """Keep the auditee's explanation as written unless it is very long."""
     text = clean_text(text)
     if not text:
         return "None"
@@ -580,77 +612,68 @@ def simplify_auditee_explanation(text):
     text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
     text = clean_text(text)
 
-    lower = text.lower()
+    words = text.split()
+    if len(words) <= max_words:
+        return make_sentence(text)
 
-    # Common specific audit explanations.
-    if "personal cash" in lower and ("overlooked" in lower or "receipt" in lower):
-        return "Personal cash was included due to an overlooked receipt."
-
-    if "not able to prepare" in lower and "pcv" in lower and ("pcr" in lower or "petty cash request" in lower) and "submitted late" in lower:
-        return "The PCR was submitted late, resulting in delayed preparation of the PCV."
-
-    if "without the corresponding pcr" in lower or "does not prepare a pcv without" in lower:
-        return "The PCV was not prepared because the corresponding PCR was not yet available."
-
-    if "supposed to stamp" in lower and "stamp" in lower:
-        return "The supporting document was not stamped before the audit."
-
-    if "avoid revisions" in lower and "pcr" in lower:
-        return "The PCR was prepared upon liquidation to avoid revisions to the requested amount."
-
-    if "personal funds" in lower and "bank account" in lower:
-        return "Personal funds were included in the bank account used for the cash advance."
-
-    # Remove auditee name/starter but preserve meaning.
-    text = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .]+?\s+(explained|stated|claimed|admitted)\s+that\s+",
-        "",
-        text,
-        flags=re.I,
-    )
-    text = re.sub(
-        r"^(According to|As per)\s+(Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-z .]+?,?\s*",
-        "",
-        text,
-        flags=re.I,
-    )
-    text = re.sub(r"^(she|he|they)\s+(explained|stated|claimed|admitted)\s+that\s+", "", text, flags=re.I)
-
-    # Keep only first clear sentence, but avoid broken fragments.
+    # For very long explanations, keep the first complete sentence if possible.
     sentences = re.split(r"(?<=[.!?])\s+", text)
-    first = clean_text(sentences[0]) if sentences else text
+    if sentences and len(sentences[0].split()) <= max_words:
+        return make_sentence(sentences[0])
 
-    # Limit length without cutting mid-thought too harshly.
-    words = first.split()
-    if len(words) > 26:
-        first = " ".join(words[:26]).rstrip(",;") + "..."
+    return make_sentence(" ".join(words[:max_words]).rstrip(",;") + "...")
 
-    return make_sentence(first)
+
+def _strip_explanation_tail(text):
+    """Remove report/recommendation/exhibit tail after the auditee explanation."""
+    text = clean_text(text)
+    stop_patterns = [
+        r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)",
+        r"\bWe recommend\b",
+        r"\bWe advise\b",
+        r"\bPlease review\b",
+        r"\bAction Taken\s*:",
+        r"\bNONE\.?$",
+    ]
+    cut = len(text)
+    for pat in stop_patterns:
+        m = re.search(pat, text, re.I)
+        if m:
+            cut = min(cut, m.start())
+    return clean_text(text[:cut])
 
 
 def extract_explanation_from_narrative(narrative):
-    """Capture auditee explanation only.
+    """Capture only the auditee's explanation.
 
-    If no auditee explanation is found, return None.
+    It captures the words after phrases such as:
+    - Ms./Mr. <Name> explained/stated/claimed/admitted that ...
+    - According to / As per Ms./Mr. <Name>, ...
+    - She/He/They explained/stated/claimed/admitted that ...
+
+    If no auditee explanation exists, return None.
     """
     text = clean_text(remove_action_taken(narrative))
     if not text:
         return "None"
 
-    # Capture only explanation statements from auditee or "According to/As per".
+    # Prefer direct auditee-name explanations.
     patterns = [
-        r"((?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated|admitted)\s+.+?)(?=(?:\s+We recommend|\s+We advise|\s+Please review|\s+Action Taken:|\s+\d+\.|\Z))",
-        r"((?:According to|As per)\s+.+?)(?=(?:\s+We recommend|\s+We advise|\s+Please review|\s+Action Taken:|\s+\d+\.|\Z))",
-        r"((?:He|She|They)\s+(?:claimed|explained|stated|admitted)\s+.+?)(?=(?:\s+We recommend|\s+We advise|\s+Please review|\s+Action Taken:|\s+\d+\.|\Z))",
+        # According to Ms. Montejo, she was uncertain...
+        r"(?:According to|As per)\s+(?:Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-z .\-']+?,\s*(.+)",
+        # Ms. Mesa explained that she was supposed...
+        r"(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .\-']+?\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
+        # She stated that...
+        r"\b(?:He|She|They)\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
     ]
 
     for pat in patterns:
         m = re.search(pat, text, re.I | re.S)
         if m:
-            return simplify_auditee_explanation(m.group(1))
+            explanation = _strip_explanation_tail(m.group(1))
+            return concise_if_long(explanation, 50)
 
     return "None"
-
 
 def make_issue_summary(issue, narrative):
     combined = clean_text(issue + " " + narrative).lower()
@@ -922,17 +945,10 @@ def extract_recommendation_from_segment(segment):
     if not text or text.upper() in ["NONE", "NONE.", "N/A"]:
         return "None"
 
-    if re.match(r"^(We recommend|We advise|Please review|The PCR form should|The custodian should|Management should)", text, re.I):
-        rec = text
-    else:
-        m = re.search(r"(We recommend.+|We advise.+|Please review.+|NONE\.?)", text, re.I | re.S)
-        if not m:
-            return "None"
-        rec = m.group(1)
-
-    rec = re.split(r"Action Taken\s*:", rec, flags=re.I)[0]
+    # In table-based PDFs, the recommendation cell is already separated.
+    # Capture it directly even if it starts with a name (e.g., Ms. Jennel Kate Fortin should...).
+    rec = re.split(r"Action Taken\s*:", text, flags=re.I)[0]
     return normalize_recommendation(rec)
-
 
 
 
@@ -1214,11 +1230,12 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
         auditor = auditor_default
 
         issue_title = infer_issue_title_from_narrative(item["issue"], item["narrative"])
+        issue_title = enhance_issue_title_details(issue_title, item["narrative"])
         item["issue"] = issue_title
 
         recommendation1 = concise_text(item.get("recommendation1", "None"), 24, "recommendation1")
         recommendation2 = concise_text(item.get("recommendation2", "None"), 24, "recommendation2")
-        explanation = concise_text(item.get("explanation", "None"), 26, "explanation")
+        explanation = make_sentence(item.get("explanation", "None"))
         correction = concise_text(item.get("correction", "None"), 24, "correction")
 
         reaction = detect_reaction(issue_title, item["narrative"], recommendation1)
