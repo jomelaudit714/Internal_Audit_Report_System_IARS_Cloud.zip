@@ -112,9 +112,6 @@ if pdf_files:
 
                 result_df, header, items = build_records(pdf_file, master_df)
 
-                # Add source file for traceability
-                result_df.insert(1, "Source PDF", pdf_file.name)
-
                 all_results.append(result_df)
 
             except Exception as e:
