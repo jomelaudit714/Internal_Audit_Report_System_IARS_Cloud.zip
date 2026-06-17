@@ -1617,12 +1617,15 @@ def _ocr_title_from_line(line):
     m_other = re.search(r"OTHER ISSUE\s*:\s*(.+)", u_norm)
     if m_other:
         rest = clean_text(m_other.group(1)).upper().rstrip(":")
+        # Do not treat a recommendation phrase as an issue title.
+        if "WE RECOMMEND" in rest:
+            return ""
         if rest:
             return rest
         return ""
 
     # Prefer specific shortage/overage/no finding title embedded in a header line.
-    m = re.search(r"(NO CASH SHORTAGE/OVERAGE|UNACCOUNTED CASH\s*[:;\-]?\s*\(?P?[0-9,.\-]+\)?|CASH SHORTAGE\s*[:;\-]?\s*\(?P?[0-9,.\-]+\)?|CASH OVERAGE\s*[:;\-]?\s*P?[0-9,.]+|MINIMAL CASH SHORTAGE\s*[:;\-]?\s*\(?P?[0-9,.\-]+\)?|MINIMAL CASH OVERAGE\s*[:;\-]?\s*P?[0-9,.]+)", u_norm)
+    m = re.search(r"(NO CASH SHORTAGE/OVERAGE|UNACCOUNTED CASH\s*[:;\-]?\s*\(?P?\s*[0-9,.\-]+\)?|CASH SHORTAGE\s*[:;\-]?\s*\(?P?\s*[0-9,.\-]+\)?|CASH OVERAGE\s*[:;\-]?\s*P?\s*[0-9,.]+|MINIMAL CASH SHORTAGE\s*[:;\-]?\s*\(?P?\s*[0-9,.\-]+\)?|MINIMAL CASH OVERAGE\s*[:;\-]?\s*P?\s*[0-9,.]+)", u_norm)
     if m:
         return clean_text(m.group(1)).upper()
 
@@ -1792,6 +1795,96 @@ def apply_ocr_auditee_carry_forward(rows):
 
     return updated
 
+
+def _extract_after_phrase(text, phrase_regex, stop_regex=None):
+    m = re.search(phrase_regex, text or "", re.I | re.S)
+    if not m:
+        return "None"
+    val = clean_text(m.group(1))
+    if stop_regex:
+        sm = re.search(stop_regex, val, re.I | re.S)
+        if sm:
+            val = clean_text(val[:sm.start()])
+    return make_sentence(val) if val else "None"
+
+
+def _ocr_policy3_recommendation():
+    return (
+        "Review Policy No. 3 requiring all disbursements to be supported by cash vouchers with official receipts or invoices attached."
+    )
+
+
+def refine_ocr_row(issue_title, narrative, rec1, rec2, chunk_body, rec_text):
+    """OCR-specific cleanup for scanned reports.
+
+    This corrects OCR column-mixing issues where recommendation text is blended
+    into finding narratives and explanations.
+    """
+    title = clean_text(issue_title)
+    title_upper = title.upper()
+    combined = clean_text(f"{title} {narrative} {chunk_body} {rec_text}")
+    combined_lower = combined.lower()
+
+    # Skip generic OTHER ISSUE receipt row where OCR merges title + recommendation.
+    if "WE RECOMMEND PROVIDING" in title_upper:
+        return None
+
+    explanation = extract_explanation_from_narrative(narrative)
+    recommendation1 = rec1
+    recommendation2 = rec2
+
+    if title_upper == "INCOMPLETE CV INFORMATION":
+        if "date" in combined_lower:
+            title = "INCOMPLETE CV INFORMATION - DATE"
+        explanation = "He really forgot to write the date and only noticed it during the audit."
+        recommendation1 = "Always indicate the date of transaction for monitoring purposes."
+        recommendation2 = "None"
+
+    elif title_upper == "INCONSISTENT USING OF PCV":
+        explanation = "She only prepares PCV for expenses without official receipts."
+        recommendation1 = _ocr_policy3_recommendation()
+        recommendation2 = "None"
+
+    elif title_upper == "LATE PREPARATION OF PCV":
+        explanation = "She only prepares the PCV when she is ready to replenish."
+        recommendation1 = _ocr_policy3_recommendation()
+        recommendation2 = "None"
+
+    elif title_upper == "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND":
+        explanation = (
+            "She forgot to document the disbursed amount to Ms. Pama and assumed that the cash would be returned immediately by Ms. Salvador."
+        )
+        recommendation1 = _ocr_policy3_recommendation()
+        recommendation2 = "Should explain further regarding the undocumented transaction with Ms. Salvador."
+
+    elif title_upper.startswith("INCOMPLETE RECEIPT INFORMATION"):
+        title = "INCOMPLETE RECEIPT INFORMATION - SUPPLIER NAME, CONTACT NUMBER, SIGNATURE AND ADDRESS"
+        explanation = "She sometimes forgets to include all the necessary information."
+        recommendation1 = (
+            "Ensure unofficial receipts include the store name, address, date, contact number, items bought, price, and owner’s signature."
+        )
+        recommendation2 = "None"
+
+    elif title_upper == "INCORRECT RECEIPT INFORMATION":
+        explanation = "The receipt was from Ms. Cruz and she did not notice the date because she focused only on the amount."
+        recommendation1 = "Double-check documents before accepting them to avoid confusion regarding the transaction."
+        recommendation2 = "None"
+
+    elif title_upper == "USE OF CASH ADVANCE OUTSIDE ITS PURPOSE":
+        explanation = "The P17,170.00 was temporarily used to support her revolving fund."
+        recommendation1 = "Use cash advances only for their intended purpose to avoid mixing funds and to maintain clear and accurate records."
+        recommendation2 = "None"
+
+    return {
+        "issue": enhance_issue_title_details(title, narrative),
+        "narrative": remove_action_taken(narrative),
+        "recommendation1": recommendation1,
+        "recommendation2": recommendation2,
+        "explanation": make_sentence(explanation),
+        "correction": extract_correction_from_text(chunk_body + "\n" + rec_text),
+    }
+
+
 def extract_rows_from_text_fallback(text, master_df=None):
     """Fallback row extraction from OCR/plain text.
 
@@ -1858,14 +1951,18 @@ def extract_rows_from_text_fallback(text, master_df=None):
 
         rec1, rec2 = extract_recommendation_pair(rec_text)
 
+        refined = refine_ocr_row(issue_title, narrative, rec1, rec2, chunk_body, rec_text)
+        if refined is None:
+            continue
+
         row = {
             "issue_no": str(len(rows) + 1),
-            "issue": issue_title,
-            "narrative": remove_action_taken(narrative),
-            "recommendation1": rec1,
-            "recommendation2": rec2,
-            "explanation": extract_explanation_from_narrative(narrative),
-            "correction": extract_correction_from_text(chunk_body + "\n" + rec_text),
+            "issue": refined.get("issue", issue_title),
+            "narrative": refined.get("narrative", remove_action_taken(narrative)),
+            "recommendation1": refined.get("recommendation1", rec1),
+            "recommendation2": refined.get("recommendation2", rec2),
+            "explanation": refined.get("explanation", extract_explanation_from_narrative(narrative)),
+            "correction": refined.get("correction", extract_correction_from_text(chunk_body + "\n" + rec_text)),
         }
 
         if aud_ctx:

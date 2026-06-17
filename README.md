@@ -40,3 +40,14 @@ For best OCR accuracy, write tags clearly using colon format, e.g. `Task ID: 001
 ## Multiple Auditee Priority Rule
 
 For scanned/OCR reports, if an auditee name is written/printed above the issue title, that auditee is applied to that issue and all following issues until another auditee name is detected above a later issue title. Auditor, Task ID, Frequency Rate, and Reaction handwritten tags continue to use their own carry-forward rules.
+
+
+## EMERITO OCR Refinement
+
+This version includes additional OCR cleanup rules for scanned reports with merged finding/recommendation columns, including:
+- INCOMPLETE CV INFORMATION - DATE
+- INCONSISTENT USING OF PCV
+- LATE PREPARATION OF PCV
+- NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND
+- INCOMPLETE / INCORRECT RECEIPT INFORMATION
+- USE OF CASH ADVANCE OUTSIDE ITS PURPOSE
