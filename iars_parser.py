@@ -248,9 +248,34 @@ def upper_ratio(text):
 def normalize_title(issue_title):
     title = clean_text(issue_title).strip().strip(":")
     upper = title.upper()
+
+    # Keep only the actual issue title when activity/auditee/company titles are mixed with it.
     for key in PRIORITY_TITLES:
         if key in upper:
             return clean_text(title[upper.find(key):])
+
+    if upper in ["OTHER ISSUE", "OTHER ISSUES"]:
+        return "OTHER ISSUE"
+
+    return title
+
+
+def infer_issue_title_from_narrative(issue_title, narrative):
+    """Convert generic issue titles into meaningful issue titles without changing the audit thought."""
+    title = clean_text(issue_title)
+    text = clean_text(narrative)
+    lower = text.lower()
+
+    if title.upper() not in ["OTHER ISSUE", "OTHER ISSUES"]:
+        return title
+
+    if "budget" in lower and ("petty cash request" in lower or "pcr" in lower):
+        if "does not require" in lower or "absence of a pcr" in lower or "submitted prior to the release" in lower:
+            return "BUDGET RELEASE WITHOUT PRIOR PCR"
+
+    if "without pcr" in lower or "no pcr" in lower:
+        return "BUDGET RELEASE WITHOUT PRIOR PCR"
+
     return title
 
 
@@ -326,244 +351,71 @@ def find_issue_title_entries(lines):
     return entries
 
 
+def split_finding_cell(finding_cell):
+    """Split a table finding cell into issue title and narrative.
 
-def split_finding_cell(finding_text):
-    """Split Audit Findings cell into issue title and narrative.
-
-    Uses the bold/uppercase issue title first, then falls back to known title keywords.
-    Audit activity/auditee name before a real issue title is ignored through normalize_title().
+    This preserves the bold/title header as Issue Detail Issue and avoids
+    capturing audit activity titles when another issue title is present.
     """
-    raw = (finding_text or "").replace("\r", "\n")
-    clean_raw = clean_text(raw)
-    if not clean_raw:
-        return "", ""
-
-    upper = clean_raw.upper()
-
-    # Locate actual issue title using priority titles.
-    title_start = 0
-    matched_key = None
-    for key in PRIORITY_TITLES:
-        pos = upper.find(key)
-        if pos >= 0:
-            title_start = pos
-            matched_key = key
-            break
-
-    if matched_key:
-        fragment = clean_raw[title_start:].strip()
-        key_len = len(matched_key)
-
-        # Include amount/percentage immediately after the title, if present.
-        tail = fragment[key_len:]
-        amount_tail = re.match(
-            r"\s*[:–-]\s*\(?\s*(?:₱|P)?\s*[0-9][0-9,]*(?:\.[0-9]+)?%?\s*\)?",
-            tail,
-            flags=re.I,
-        )
-
-        title_end = key_len + (amount_tail.end() if amount_tail else 0)
-        title = fragment[:title_end].strip(" :")
-        narrative = fragment[title_end:].strip()
-        return clean_text(normalize_title(title)), clean_text(narrative)
-
-    # No priority title found: use narrative starters to separate title and body.
-    working = clean_raw
-    narrative_starts = [
-        "Surprise", "During", "Upon", "There ", "Details",
-        "According", "As per", "Ms.", "Mr.", "We requested",
-        "At the commencement", "On June", "All cash",
+    lines = [
+        clean_text(x)
+        for x in str(finding_cell or "").replace("\r", "\n").split("\n")
+        if clean_text(x)
     ]
 
-    end_candidates = []
-    for starter in narrative_starts:
-        m = re.search(r"\b" + re.escape(starter) + r"\b", working, flags=re.I)
-        if m and m.start() > 0:
-            end_candidates.append(m.start())
+    if not lines:
+        return "", ""
 
-    if end_candidates:
-        title = working[:min(end_candidates)].strip(" :")
-        narrative = working[min(end_candidates):].strip()
-    else:
-        lines = [clean_text(x) for x in raw.split("\n") if clean_text(x)]
-        title_lines = []
-        body_lines = []
-        mode = "title"
-        for line in lines:
-            low = line.lower()
-            if mode == "title":
-                if (
-                    (upper_ratio(line) >= 0.85 or any(k in line.upper() for k in TITLE_KEYWORDS))
-                    and not low.startswith(("surprise", "during", "upon", "there ", "according", "as per", "ms.", "mr."))
-                    and len(line) <= 180
-                ):
-                    title_lines.append(line.strip(" :"))
-                    continue
-                mode = "body"
-            body_lines.append(line)
-        title = " ".join(title_lines) if title_lines else lines[0]
-        narrative = " ".join(body_lines) if body_lines else clean_raw.replace(title, "", 1).strip()
+    title_lines = []
+    narrative_start = 0
 
-    return clean_text(normalize_title(title)), clean_text(narrative)
+    for i, line in enumerate(lines):
+        upper = line.upper().strip().rstrip(":")
+
+        # Stop title capture when narrative starts.
+        if upper_ratio(line) < 0.80 and not upper in ["OTHER ISSUE", "OTHER ISSUES"]:
+            narrative_start = i
+            break
+
+        # Accept generic OTHER ISSUE temporarily; infer later from narrative.
+        is_generic_other = upper in ["OTHER ISSUE", "OTHER ISSUES"]
+
+        # Accept title-looking lines only.
+        is_title = (
+            is_generic_other
+            or any(k in upper for k in TITLE_KEYWORDS)
+            or any(k in upper for k in PRIORITY_TITLES)
+        )
+
+        if is_title and len(line) <= 180:
+            title_lines.append(line.strip().rstrip(":"))
+            narrative_start = i + 1
+        else:
+            narrative_start = i
+            break
+
+    if not title_lines:
+        title_lines = [lines[0].strip().rstrip(":")]
+        narrative_start = 1
+
+    raw_title = normalize_title(" ".join(title_lines))
+    narrative = "\n".join(lines[narrative_start:])
+    issue_title = infer_issue_title_from_narrative(raw_title, narrative)
+
+    return issue_title, narrative
+
 
 def normalize_recommendation(rec):
     rec = clean_text(rec).replace("NONE.", "None").strip()
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
-
     rec = re.sub(r"^We recommend(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
-
-    # Remove named subject while preserving requested action.
-    action_verbs = r"properly document|return|use|update|review|ensure|avoid|explain|prepare|submit|document|cancel|monitor|reconcile|promptly prepare"
-    if re.match(r"^(Mr\.|Ms\.|Mrs\.)\s+", rec, flags=re.I):
-        m = re.search(rf"\b(?:should\s+|to\s+)?({action_verbs})\b", rec, flags=re.I)
-        if m:
-            rec = rec[m.start(1):]
-
-    rec = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'-]+?\s+(?:should\s+|to\s+)",
-        "",
-        rec,
-        flags=re.I,
-    )
-    rec = re.sub(r"^(The custodian|The employee|The auditee|Management|The responsible personnel)\s+(?:should\s+|to\s+)?", "", rec, flags=re.I)
-
+    rec = re.sub(r"^(Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(return|use|update|review|ensure|avoid|explain)\b", lambda m: m.group(2).capitalize(), rec, flags=re.I)
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
-
-    rec = clean_text(rec)
     return rec[0].upper() + rec[1:] if rec else "None"
-
-def remove_person_lead(text):
-    """Remove leading names/honorifics while preserving the audit thought."""
-    text = clean_text(text)
-
-    # Direct explanations: "Ms. X explained/stated/claimed that ..."
-    text = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'-]+?\s+(claimed|explained|stated|admitted)\s+that\s+",
-        "",
-        text,
-        flags=re.I,
-    )
-    text = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'-]+?\s+(claimed|explained|stated|admitted)\s+",
-        "",
-        text,
-        flags=re.I,
-    )
-
-    # "According to/As per Ms. X, she..." or "As per Ms. X she..."
-    m = re.match(
-        r"^(According to|As per)\s+(?:(Mr\.|Ms\.|Mrs\.)\s+)?[A-Z][A-Za-zñÑ .'-]+?(?:,\s*|\s+)(he|she|they|the)\b\s*(.*)$",
-        text,
-        flags=re.I,
-    )
-    if m:
-        pronoun = m.group(3)
-        rest = m.group(4)
-        text = clean_text(f"{pronoun} {rest}")
-
-    text = re.sub(r"^The audit noted that\s+", "", text, flags=re.I)
-    text = re.sub(r"^It was noted that\s+", "", text, flags=re.I)
-    text = re.sub(r"^Management explained that\s+", "", text, flags=re.I)
-    return clean_text(text)
-
-def trim_to_sentence(text, max_words=25):
-    """Keep complete sentence when possible; otherwise trim by words."""
-    text = clean_text(text)
-    if not text or text == "None":
-        return "None"
-
-    # Remove exhibit references and extra report marks.
-    text = re.sub(r"\(See Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-
-    # Prefer a complete first sentence if it is not too long.
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    if sentences:
-        first = clean_text(sentences[0])
-        if 5 <= len(first.split()) <= max_words:
-            return first
-
-    return " ".join(words[:max_words]).rstrip(",;:") + "..."
-
-
-def concise_text(text, field="general", max_words=25):
-    """Make explanation/recommendation/correction concise without changing the intent."""
-    text = clean_text(text)
-    if not text or text == "None":
-        return "None"
-
-    text = remove_person_lead(text)
-
-    # Common explanation cleanup from cash count reports.
-    text = re.sub(r"^this was her personal cash and that she overlooked the receipt", "Personal cash was overlooked and mixed with the fund", text, flags=re.I)
-    text = re.sub(r"^this was his personal cash and that he overlooked the receipt", "Personal cash was overlooked and mixed with the fund", text, flags=re.I)
-    text = re.sub(r"^she stated that she forgot to prepare", "The custodian forgot to prepare", text, flags=re.I)
-    text = re.sub(r"^he stated that he forgot to prepare", "The custodian forgot to prepare", text, flags=re.I)
-    if text:
-        text = text[0].upper() + text[1:]
-
-    if field == "recommendation":
-        # Convert recommendation to direct action while preserving meaning.
-        text = re.sub(r"^(The custodian|The employee|The auditee|Management|The responsible personnel)\s+(?:should\s+|to\s+)?", "", text, flags=re.I)
-        text = re.sub(r"^should\s+", "", text, flags=re.I)
-        text = re.sub(r"^to\s+", "", text, flags=re.I)
-        return trim_to_sentence(text, max_words=max_words)
-
-    if field == "correction":
-        if re.search(r"presented a copy of the request.*consolidation", text, flags=re.I):
-            return "Request for fund consolidation was presented for approval."
-        return trim_to_sentence(text, max_words=max_words)
-
-    if field == "explanation":
-        return trim_to_sentence(text, max_words=max_words)
-
-    return trim_to_sentence(text, max_words=max_words)
-
-
-def split_recommendation_fields(recommendation):
-    """Split recommendation into primary action and secondary/preventive action when present."""
-    recommendation = clean_text(recommendation)
-    if not recommendation or recommendation == "None":
-        return "None", "None"
-
-    # Strong split markers used in actual audit reports.
-    markers = [
-        r"\bAlso,\s+",
-        r"\bIn addition,\s+",
-        r"\bFurther,\s+",
-        r"\bFurthermore,\s+",
-        r"\bMoreover,\s+",
-    ]
-
-    for marker in markers:
-        m = re.search(marker, recommendation, flags=re.I)
-        if m:
-            first = recommendation[:m.start()].strip(" .;")
-            second = recommendation[m.end():].strip(" .;")
-            return (
-                concise_text(first, "recommendation", 24),
-                concise_text(second, "recommendation", 24),
-            )
-
-    # If multiple sentences and the second is an action/preventive recommendation, split it.
-    sentences = [clean_text(s) for s in re.split(r"(?<=[.!?])\s+", recommendation) if clean_text(s)]
-    if len(sentences) >= 2:
-        second_lower = sentences[1].lower()
-        if any(k in second_lower for k in ["ensure", "review", "monitor", "reconcile", "update", "avoid", "maintain", "submit"]):
-            return (
-                concise_text(sentences[0], "recommendation", 24),
-                concise_text(" ".join(sentences[1:]), "recommendation", 24),
-            )
-
-    return concise_text(recommendation, "recommendation", 28), "None"
 
 
 def remove_action_taken(text):
@@ -649,16 +501,19 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
             return "Cash/Fund/Collection Shortage (below ₱3,000.00) -4"
         return "Cash/Fund/Collection Shortage (₱3,000.00 and above) -8"
 
-    if any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage"]):
-        # Evaluate immateriality first before assigning actual overage category.
+    if any(k in issue_lower for k in ["cash overage", "fund overage", "collection overage", "minimal cash overage"]):
+        # Evaluate immateriality first before actual overage category.
         if amount is not None and amount < 1000:
             return "Immaterial Findings 3"
         return "Cash/Fund/Collection Overage (₱1,000.00 and above) -4"
 
+    if "without stamped" in combined and "paid" in combined:
+        return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
+
     if is_estancia and any(k in combined for k in ["policy", "procedure", "proper procedure", "guidelines", "sop", "required", "must", "cash voucher"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
-    if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported", "cash voucher", "official receipt", "invoice"]):
+    if is_petty_cash and any(k in combined for k in ["reimbursement exceeding", "without stamped paid", "unsupported receipt", "unsupported invoice", "official receipt without", "invoice without"]):
         return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
 
     if any(k in issue_lower for k in ["incomplete details", "incomplete receipt", "incorrect receipt", "incomplete cv", "incomplete pcv", "incorrect pcv", "omission", "alteration"]):
@@ -762,10 +617,19 @@ def match_employee(master_df, auditee):
 
 
 def extract_recommendation_from_segment(segment):
-    m = re.search(r"(We recommend.+|We advise.+|Please review.+|NONE\.?)", segment, re.I | re.S)
-    if not m:
+    text = clean_text(segment)
+    if not text or text.upper() in ["NONE", "NONE.", "N/A"]:
         return "None"
-    rec = m.group(1)
+
+    # If the cell itself is already the recommendation, normalize it directly.
+    if re.match(r"^(We recommend|We advise|Please review|The PCR form should|The custodian should|Management should)", text, re.I):
+        rec = text
+    else:
+        m = re.search(r"(We recommend.+|We advise.+|Please review.+|NONE\.?)", text, re.I | re.S)
+        if not m:
+            return "None"
+        rec = m.group(1)
+
     rec = re.split(r"Action Taken\s*:", rec, flags=re.I)[0]
     return normalize_recommendation(rec)
 
@@ -783,11 +647,10 @@ def remove_title_from_segment(segment, title):
 
 
 def extract_finding_rows_from_pdf(pdf_file):
-    """Extract finding rows using PDF tables first, with text fallback.
+    """Extract finding rows from PDF.
 
-    This preserves the stable behavior:
-    - Issue Detail Issue = exact issue title/bold header
-    - Recommendation = recommendation column/text only
+    Primary method: pdfplumber table extraction to keep Audit Findings and Recommendation separate.
+    Fallback method: title-line extraction for irregular PDFs.
     """
     rows = []
     pdf_file.seek(0)
@@ -800,74 +663,64 @@ def extract_finding_rows_from_pdf(pdf_file):
                         continue
 
                     cells = [clean_cell_preserve(c) for c in row]
-                    if not any(clean_text(c) for c in cells):
-                        continue
-
-                    # Find numbered audit issue row.
+                    # Detect issue number.
                     issue_no = None
-                    issue_idx = None
-                    for i, c in enumerate(cells):
-                        if re.fullmatch(r"\d{1,2}\.?", clean_text(c)):
-                            issue_no = clean_text(c).rstrip(".")
-                            issue_idx = i
+                    for c in cells:
+                        m = re.fullmatch(r"\s*(\d{1,2})\.?\s*", clean_text(c))
+                        if m:
+                            issue_no = m.group(1)
                             break
 
-                    if issue_no is None:
+                    if not issue_no:
                         continue
 
-                    # Table layouts seen:
-                    # 5 columns: issue no, blank, blank, audit findings, recommendation
-                    # 3 columns: issue no, audit findings, recommendation
-                    non_empty_after = [c for c in cells[issue_idx + 1:] if clean_text(c)]
+                    non_empty = [c for c in cells if clean_text(c)]
+
+                    # Expected structures:
+                    # [issue_no, finding_cell, recommendation_cell]
+                    # or [issue_no, blank, blank, finding_cell, recommendation_cell]
+                    if len(non_empty) < 2:
+                        continue
 
                     finding_cell = ""
                     rec_cell = ""
 
-                    if len(cells) >= 5 and clean_text(cells[-2]):
-                        finding_cell = cells[-2]
-                        rec_cell = cells[-1] if clean_text(cells[-1]) else ""
-                    elif len(cells) >= 3 and clean_text(cells[-2]):
-                        finding_cell = cells[-2]
-                        rec_cell = cells[-1] if clean_text(cells[-1]) else ""
-                    elif len(non_empty_after) >= 2:
-                        finding_cell = non_empty_after[-2]
-                        rec_cell = non_empty_after[-1]
-                    elif len(non_empty_after) == 1:
-                        finding_cell = non_empty_after[0]
-                        rec_cell = ""
+                    if clean_text(non_empty[0]).rstrip(".") == issue_no:
+                        if len(non_empty) >= 3:
+                            finding_cell = non_empty[1]
+                            rec_cell = non_empty[2]
+                        elif len(non_empty) == 2:
+                            finding_cell = non_empty[1]
+                            rec_cell = "None"
+                    else:
+                        continue
 
                     if not clean_text(finding_cell):
                         continue
-                    if "Audit Findings" in finding_cell and "Recommendation" in finding_cell:
-                        continue
 
                     issue_title, narrative = split_finding_cell(finding_cell)
+                    recommendation = extract_recommendation_from_segment(rec_cell)
+
                     if not clean_text(issue_title):
                         continue
-
-                    segment = f"{finding_cell}\n{rec_cell}"
 
                     rows.append({
                         "issue_no": issue_no,
                         "issue": issue_title,
                         "narrative": remove_action_taken(narrative),
-                        "recommendation1": normalize_recommendation(rec_cell),
+                        "recommendation1": recommendation,
                         "recommendation2": "None",
                         "explanation": extract_explanation_from_narrative(narrative),
-                        "correction": extract_correction_from_text(finding_cell),
+                        "correction": extract_correction_from_text(narrative + "\n" + clean_text(rec_cell)),
                     })
 
     pdf_file.seek(0)
 
+    # If table extraction succeeded, use it.
     if rows:
-        # Sort by actual issue number to preserve report order.
-        try:
-            rows = sorted(rows, key=lambda x: int(x["issue_no"]))
-        except Exception:
-            pass
         return rows
 
-    # Fallback: previous text-based logic if tables are not detected.
+    # Fallback: previous title-line extraction for irregular PDFs.
     text = extract_all_text(pdf_file)
     body = crop_report_body(text)
     lines = [x.rstrip() for x in body.split("\n") if clean_text(x)]
@@ -880,6 +733,7 @@ def extract_finding_rows_from_pdf(pdf_file):
         segment = "\n".join(segment_lines)
         issue_title = entry["title"]
         narrative_segment = "\n".join(lines[entry["end_title"]:next_start])
+        issue_title = infer_issue_title_from_narrative(issue_title, narrative_segment)
 
         fallback_rows.append({
             "issue_no": str(idx + 1),
@@ -893,6 +747,7 @@ def extract_finding_rows_from_pdf(pdf_file):
 
     return fallback_rows
 
+
 def filter_no_findings_when_other_issues(items):
     # Keep every numbered row. A separate No Findings row can be valid for a specific auditee/activity.
     return items
@@ -903,13 +758,90 @@ def classify_audit_type(text):
     return "Operations Audit" if any(t in text.lower() for t in sales_terms) else "Financial Audit"
 
 
+
+def concise_text(text, max_words=25, field="general"):
+    """Make extracted text concise and understandable without changing the audit thought."""
+    text = clean_text(text)
+    if not text or text.upper() in ["NONE", "N/A", "NONE."]:
+        return "None"
+
+    text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    text = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .]+?\s+(explained|stated|claimed|admitted)\s+that\s+",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"^(According to|As per)\s+(Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-z .]+?,?\s*", "", text, flags=re.I)
+    text = re.sub(r"^(It was observed that|It was noted that|The audit noted that)\s+", "", text, flags=re.I)
+
+    if field.startswith("recommendation"):
+        text = re.sub(r"^the custodian\s+to\s+", "", text, flags=re.I)
+        text = re.sub(r"^custodian\s+to\s+", "", text, flags=re.I)
+        text = re.sub(r"^management\s+should\s+", "", text, flags=re.I)
+        if text:
+            text = text[0].upper() + text[1:]
+
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if sentences and len(sentences[0].split()) <= max_words:
+        return sentences[0].strip()
+
+    return " ".join(words[:max_words]).rstrip(",;") + "..."
+
+
+def is_no_or_immaterial_finding(finding_text, issue_text=""):
+    combined = clean_text(f"{finding_text} {issue_text}").lower()
+    return (
+        "immaterial findings" in combined
+        or "no findings" in combined
+        or "no cash shortage" in combined
+        or "no cash overage" in combined
+        or "no cash shortage/overage" in combined
+        or "no cash overage/shortage" in combined
+        or "no shortage/overage" in combined
+        or "no overage/shortage" in combined
+        or "fund is intact" in combined
+    )
+
+
+def filter_rows_by_task_id(row_dicts):
+    """Filter no-finding/immaterial rows based on Task ID.
+
+    If Task ID is blank/None, all rows are treated as the same task.
+    If different Task IDs are supplied later, each Task ID is evaluated separately.
+    """
+    grouped = {}
+    for row in row_dicts:
+        task_id = clean_text(row.get("task_id", "")) or "None"
+        grouped.setdefault(task_id, []).append(row)
+
+    final_rows = []
+    for task_id, rows in grouped.items():
+        actual = [
+            r for r in rows
+            if not is_no_or_immaterial_finding(r.get("findings", ""), r.get("issue", ""))
+        ]
+
+        if actual:
+            final_rows.extend(actual)
+        else:
+            final_rows.extend(rows)
+
+    return final_rows
+
 def build_records(pdf_file, master_df=None, manual_df=None):
     text = extract_all_text(pdf_file)
     header = extract_header(text)
     emp_id, emp_name = match_employee(master_df, header["auditee_name"])
     auditor_default = prepared_by_auditor(text)
     audit_type = classify_audit_type(text)
-    items = filter_no_findings_when_other_issues(extract_finding_rows_from_pdf(pdf_file))
+    items = extract_finding_rows_from_pdf(pdf_file)
 
     manual_map = {}
     if manual_df is not None and not manual_df.empty:
@@ -918,13 +850,23 @@ def build_records(pdf_file, master_df=None, manual_df=None):
             if issue_no:
                 manual_map[issue_no] = r
 
-    rows = []
+    row_dicts = []
+
     for row_no, item in enumerate(items, 1):
         manual = manual_map.get(item["issue_no"])
         task_id = header["task_id"]
         auditor = auditor_default
-        reaction = detect_reaction(item["issue"], item["narrative"], item["recommendation1"])
-        frequency = detect_frequency(item["issue"], item["narrative"], item["recommendation1"])
+
+        issue_title = infer_issue_title_from_narrative(item["issue"], item["narrative"])
+        item["issue"] = issue_title
+
+        recommendation1 = concise_text(item.get("recommendation1", "None"), 24, "recommendation1")
+        recommendation2 = concise_text(item.get("recommendation2", "None"), 24, "recommendation2")
+        explanation = concise_text(item.get("explanation", "None"), 26, "explanation")
+        correction = concise_text(item.get("correction", "None"), 24, "correction")
+
+        reaction = detect_reaction(issue_title, item["narrative"], recommendation1)
+        frequency = detect_frequency(issue_title, item["narrative"], recommendation1)
 
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
@@ -932,36 +874,49 @@ def build_records(pdf_file, master_df=None, manual_df=None):
             reaction = clean_text(manual.get("Reaction", "")) or reaction
             frequency = clean_text(manual.get("Frequency", "")) or frequency
 
-        findings = classify_finding(item["issue"], item["recommendation1"], item["narrative"], header.get("company", ""), header.get("audit_title", ""))
+        findings = classify_finding(
+            issue_title,
+            recommendation1,
+            item["narrative"],
+            header.get("company", ""),
+            header.get("audit_title", ""),
+        )
+
         score = parse_score(findings)
+
         if "No Findings" in findings or "Immaterial Findings" in findings:
             reaction = "Maintaining Status Quo"
             frequency = "Not Applicable"
+
         improve = RESPONSE_RATE.get(reaction, 0) * FREQUENCY_RATE.get(frequency, 1)
         net = score + improve
         case_status = "No Case/Issue" if ("No Findings" in findings or "Immaterial Findings" in findings) else "Follow-up with HR"
         user = auditor.split()[0] if auditor and auditor != "None" else "None"
 
-        # Keep Issue Detail Issue as the exact captured issue title.
-        issue_detail = item["issue"]
+        row_dicts.append({
+            "row_no": row_no,
+            "task_id": task_id or "None",
+            "issue": issue_title,
+            "findings": findings,
+            "row": [
+                row_no, date.today().isoformat(), audit_type, header["date_reported"],
+                header["audit_reference"], emp_id, emp_name, task_id or "None",
+                header["scope_date"], header["year"], findings,
+                issue_title,
+                explanation or "None", recommendation1 or "None",
+                recommendation2 or "None", auditor or "None", "None",
+                reaction, frequency, correction or "None", "", case_status,
+                score, improve, net, "Individual", user,
+            ],
+        })
 
-        # Make supporting fields concise while preserving the original audit thought.
-        explanation = concise_text(item.get("explanation", "None"), "explanation", 25)
-        recommendation1, recommendation2 = split_recommendation_fields(item.get("recommendation1", "None"))
-        if item.get("recommendation2") and item.get("recommendation2") != "None":
-            recommendation2 = concise_text(item.get("recommendation2"), "recommendation", 24)
-        correction = concise_text(item.get("correction", "None"), "correction", 22)
+    filtered = filter_rows_by_task_id(row_dicts)
 
-        rows.append([
-            row_no, date.today().isoformat(), audit_type, header["date_reported"],
-            header["audit_reference"], emp_id, emp_name, task_id or "None",
-            header["scope_date"], header["year"], findings,
-            issue_detail,
-            explanation, recommendation1,
-            recommendation2, auditor or "None", "None",
-            reaction, frequency, correction, "", case_status,
-            score, improve, net, "Individual", user,
-        ])
+    rows = []
+    for new_no, row_info in enumerate(filtered, 1):
+        row = row_info["row"]
+        row[0] = new_no
+        rows.append(row)
 
     return pd.DataFrame(rows, columns=HEADERS), header, items
 
