@@ -603,30 +603,26 @@ def make_sentence(text):
     return text
 
 
-def concise_if_long(text, max_words=50):
-    """Keep the auditee's explanation as written unless it is very long."""
-    text = clean_text(text)
-    if not text:
-        return "None"
-
-    text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
+def _remove_leading_name_fragments(text):
+    """Remove incomplete surname/name fragments caused by PDF extraction."""
     text = clean_text(text)
 
-    words = text.split()
-    if len(words) <= max_words:
-        return make_sentence(text)
+    # Examples to remove:
+    # "Rtin, she had mistakenly..."
+    # "Fortin, she had mistakenly..."
+    # "Mesa, she was not able..."
+    text = re.sub(r"^[A-Z][A-Za-z\-']{1,25},\s+(she|he|they)\b", r"\1", text, flags=re.I)
 
-    # For very long explanations, keep the first complete sentence if possible.
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    if sentences and len(sentences[0].split()) <= max_words:
-        return make_sentence(sentences[0])
+    # Remove fragments before pronoun when no comma exists.
+    text = re.sub(r"^[A-Z][A-Za-z\-']{1,25}\s+(she|he|they)\b", r"\1", text, flags=re.I)
 
-    return make_sentence(" ".join(words[:max_words]).rstrip(",;") + "...")
+    return clean_text(text)
 
 
 def _strip_explanation_tail(text):
     """Remove report/recommendation/exhibit tail after the auditee explanation."""
     text = clean_text(text)
+
     stop_patterns = [
         r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)",
         r"\bWe recommend\b",
@@ -635,42 +631,68 @@ def _strip_explanation_tail(text):
         r"\bAction Taken\s*:",
         r"\bNONE\.?$",
     ]
+
     cut = len(text)
     for pat in stop_patterns:
         m = re.search(pat, text, re.I)
         if m:
             cut = min(cut, m.start())
-    return clean_text(text[:cut])
+
+    text = clean_text(text[:cut])
+    text = _remove_leading_name_fragments(text)
+    return text
+
+
+def concise_if_long(text, max_words=50):
+    """Keep auditee explanation as written unless it exceeds max_words."""
+    text = _strip_explanation_tail(text)
+    if not text:
+        return "None"
+
+    words = text.split()
+    if len(words) <= max_words:
+        return make_sentence(text)
+
+    # For long explanations, keep first complete sentence when possible.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if sentences and len(sentences[0].split()) <= max_words:
+        return make_sentence(sentences[0])
+
+    return make_sentence(" ".join(words[:max_words]).rstrip(",;") + "...")
 
 
 def extract_explanation_from_narrative(narrative):
-    """Capture only the auditee's explanation.
+    """Capture auditee explanation only.
 
-    It captures the words after phrases such as:
-    - Ms./Mr. <Name> explained/stated/claimed/admitted that ...
-    - According to / As per Ms./Mr. <Name>, ...
-    - She/He/They explained/stated/claimed/admitted that ...
+    Hierarchy:
+    1. "According to/As per <Auditee>, ..."
+    2. "<Auditee> explained/stated/claimed/admitted that ..."
+    3. "She/He/They further explained/stated/claimed/admitted that ..."
 
-    If no auditee explanation exists, return None.
+    The auditee name is not included in the output. If no auditee explanation
+    is found, return None.
     """
     text = clean_text(remove_action_taken(narrative))
     if not text:
         return "None"
 
-    # Prefer direct auditee-name explanations.
+    # Avoid recommendation/action text contaminating the explanation.
+    text = re.split(r"\b(?:We recommend|We advise|Please review|Action Taken\s*:)", text, flags=re.I)[0]
+    text = clean_text(text)
+
     patterns = [
         # According to Ms. Montejo, she was uncertain...
         r"(?:According to|As per)\s+(?:Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-z .\-']+?,\s*(.+)",
         # Ms. Mesa explained that she was supposed...
-        r"(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .\-']+?\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
-        # She stated that...
-        r"\b(?:He|She|They)\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
+        r"(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .\-']+\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
+        # She further explained that...
+        r"\b(?:He|She|They)\s+(?:further\s+)?(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
     ]
 
     for pat in patterns:
         m = re.search(pat, text, re.I | re.S)
         if m:
-            explanation = _strip_explanation_tail(m.group(1))
+            explanation = m.group(1)
             return concise_if_long(explanation, 50)
 
     return "None"
