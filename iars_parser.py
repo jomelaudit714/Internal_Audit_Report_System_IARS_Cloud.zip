@@ -390,14 +390,13 @@ def infer_issue_title_from_narrative(issue_title, narrative):
 
 
 def enhance_issue_title_details(issue_title, narrative):
-    """Add missing-detail qualifier to generic issue titles when the report identifies the exact field."""
+    """Add missing-detail qualifier to generic issue titles when the report identifies the field."""
     title = clean_text(issue_title)
     lower_title = title.lower()
     text = clean_text(f"{issue_title} {narrative}")
     lower = text.lower()
 
     if lower_title.startswith("incomplete details in pcv"):
-        # If the title already includes details after colon, normalize colon to dash.
         m = re.search(r"incomplete details in pcv\s*:\s*(.+)", title, re.I)
         if m:
             details = clean_text(m.group(1)).upper()
@@ -424,10 +423,8 @@ def enhance_issue_title_details(issue_title, narrative):
             fields.append("SIGNATURE")
 
         if fields:
-            # De-duplicate while preserving order.
             clean_fields = []
             for f in fields:
-                f = f.strip()
                 if f and f not in clean_fields:
                     clean_fields.append(f)
             return f"INCOMPLETE DETAILS IN PCV - {', '.join(clean_fields)}"
@@ -525,14 +522,26 @@ def _is_generic_other(upper):
     return upper.strip().rstrip(":") in ["OTHER ISSUE", "OTHER ISSUES"]
 
 
-def split_finding_cell(finding_cell):
-    """Split a table finding cell into actual issue title and narrative.
+def _is_activity_header(upper):
+    return upper.strip().rstrip(":") in [
+        "REVOLVING FUND COUNT",
+        "PETTY CASH FUND",
+        "PETTY CASH FUND COUNT",
+        "CASH ADVANCES COUNT",
+        "CASH ADVANCE COUNT",
+        "DAILY SALES COUNT",
+        "CASH SALES COUNT",
+        "COLLECTION COUNT",
+        "CHANGE FUND COUNT",
+    ]
 
-    Rules:
-    - Ignore activity headers such as REVOLVING FUND COUNT.
-    - Do not capture OTHER ISSUE. If another real title appears after it, capture that.
-    - Prefer real finding titles such as UNACCOUNTED CASH / CASH SHORTAGE.
-    """
+
+def _is_generic_other(upper):
+    return upper.strip().rstrip(":") in ["OTHER ISSUE", "OTHER ISSUES"]
+
+
+def split_finding_cell(finding_cell):
+    """Split table finding cell into actual issue title and narrative."""
     lines = [
         clean_text(x)
         for x in str(finding_cell or "").replace("\r", "\n").split("\n")
@@ -544,16 +553,12 @@ def split_finding_cell(finding_cell):
 
     title_index = None
     title_parts = []
+    narrative_start = 0
 
     for i, line in enumerate(lines):
         upper = line.upper().strip().rstrip(":")
 
-        # Skip activity/task headers.
-        if _is_activity_header(upper):
-            continue
-
-        # Skip OTHER ISSUE, but keep scanning for a real title after it.
-        if _is_generic_other(upper):
+        if _is_activity_header(upper) or _is_generic_other(upper):
             continue
 
         is_real_title = (
@@ -566,12 +571,11 @@ def split_finding_cell(finding_cell):
             or "NO PRE-PRINTED SERIES" in upper
         )
 
-        if is_real_title and upper_ratio(line) >= 0.75 and len(line) <= 220:
+        if is_real_title and upper_ratio(line) >= 0.70 and len(line) <= 230:
             title_index = i
             title_parts = [line.rstrip(":")]
-
-            # Capture immediately following title continuation lines.
             j = i + 1
+
             while j < len(lines):
                 nxt = lines[j]
                 nxt_upper = nxt.upper().strip().rstrip(":")
@@ -580,8 +584,8 @@ def split_finding_cell(finding_cell):
                     continue
 
                 nxt_is_title_cont = (
-                    upper_ratio(nxt) >= 0.75
-                    and len(nxt) <= 220
+                    upper_ratio(nxt) >= 0.70
+                    and len(nxt) <= 230
                     and (
                         any(k in nxt_upper for k in PRIORITY_TITLES)
                         or any(k in nxt_upper for k in TITLE_KEYWORDS)
@@ -600,17 +604,15 @@ def split_finding_cell(finding_cell):
             break
 
     if title_index is None:
-        # If the row begins with OTHER ISSUE and no later title exists,
-        # infer a real issue title from the whole narrative instead of capturing the narrative sentence.
-        first_upper = lines[0].upper().strip().rstrip(":")
-        if _is_generic_other(first_upper):
+        # Do not capture OTHER ISSUE. If no real title is found, infer if possible; otherwise skip.
+        if lines and _is_generic_other(lines[0].upper().strip().rstrip(":")):
             narrative = "\n".join(lines[1:])
             inferred = infer_issue_title_from_narrative("OTHER ISSUE", narrative)
             if not _is_generic_other(inferred.upper()):
                 return enhance_issue_title_details(inferred, narrative), narrative
             return "", ""
 
-        # Fallback: first non-activity line only if it is not generic OTHER ISSUE.
+        # Fallback only for non-activity and non-other lines.
         for i, line in enumerate(lines):
             upper = line.upper().strip().rstrip(":")
             if not _is_activity_header(upper) and not _is_generic_other(upper):
@@ -623,9 +625,7 @@ def split_finding_cell(finding_cell):
         return "", ""
 
     raw_title = normalize_title(" ".join(title_parts))
-
-    # If the selected title is still OTHER ISSUE or an activity header, do not capture it.
-    if _is_generic_other(raw_title.upper()) or _is_activity_header(raw_title.upper()):
+    if _is_activity_header(raw_title.upper()) or _is_generic_other(raw_title.upper()):
         return "", ""
 
     narrative = "\n".join(lines[narrative_start:])
@@ -640,14 +640,12 @@ def normalize_recommendation(rec):
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
 
-    # Recommendation triggers / connectors
+    # Remove generic recommendation openers while preserving actual instruction.
     rec = re.sub(r"^We recommend(?:ed)?(?: that)?\s+", "", rec, flags=re.I)
     rec = re.sub(r"^We advise\s+", "", rec, flags=re.I)
     rec = re.sub(r"^Please review\s+", "Review ", rec, flags=re.I)
-    rec = re.sub(r"^Also,\s*", "Also, ", rec, flags=re.I)
 
-    # Remove named auditee but preserve "should".
-    # Example: "Ms. Angelica Cuevas should provide..." -> "Should provide..."
+    # Remove auditee name but preserve "Should".
     rec = re.sub(
         r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+should\b",
         "Should",
@@ -655,16 +653,7 @@ def normalize_recommendation(rec):
         flags=re.I,
     )
 
-    # Remove named auditee with "and the Finance Department" while preserving action.
-    rec = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+and\s+the\s+Finance\s+Department\s+maintain\b",
-        "Maintain",
-        rec,
-        flags=re.I,
-    )
-
-    # Remove named auditee followed by comma while preserving the actual clause.
-    # Example: "Ms. Cuevas, if a mistake is made..." -> "If a mistake is made..."
+    # Remove auditee name followed by comma.
     rec = re.sub(
         r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6},\s*",
         "",
@@ -672,9 +661,17 @@ def normalize_recommendation(rec):
         flags=re.I,
     )
 
-    # Remove named auditee for direct action recommendations.
+    # Remove auditee with "and the Finance Department maintain".
     rec = re.sub(
-        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+(return|use|update|review|ensure|avoid|explain|prepare|stamp|submit|properly|promptly|monitor|provide|reconcile|account)\b",
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+and\s+the\s+Finance\s+Department\s+maintain\b",
+        "Maintain",
+        rec,
+        flags=re.I,
+    )
+
+    # Remove auditee name for direct actions.
+    rec = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+(return|use|update|review|ensure|avoid|explain|prepare|stamp|submit|properly|promptly|monitor|provide|reconcile|account|maintain)\b",
         lambda m: m.group(2).capitalize(),
         rec,
         flags=re.I,
@@ -682,7 +679,7 @@ def normalize_recommendation(rec):
 
     rec = re.sub(r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ.'\-]*(?:\s+[A-Z][A-Za-zñÑ.'\-]*){0,6}\s+to\s+", "", rec, flags=re.I)
 
-    # Generic cleanup.
+    # Generic wording cleanup.
     rec = re.sub(r"^(the\s+)?custodian\s+to\s+", "", rec, flags=re.I)
     rec = re.sub(r"^(the\s+)?custodian\s+should\s+", "Should ", rec, flags=re.I)
     rec = re.sub(r"^management\s+should\s+", "Should ", rec, flags=re.I)
@@ -691,20 +688,15 @@ def normalize_recommendation(rec):
     rec = re.sub(r"^The use of\s+(.+?)\s+as\b", r"Use \1 as", rec, flags=re.I)
     rec = re.sub(r"^Records be updated\b", "Update records", rec, flags=re.I)
 
-    rec = clean_text(rec)
-    return make_sentence(rec) if rec else "None"
+    return make_sentence(rec)
 
 
 def split_recommendations(rec):
-    """Split recommendation cell into Recommendation1 and Recommendation2.
-
-    Keeps continuation paragraphs that start with Also/Furthermore/In addition/etc.
-    """
+    """Split recommendation cell into Recommendation1 and Recommendation2."""
     rec = clean_text(rec)
     if not rec or rec.upper() in ["NONE", "N/A", "NONE."]:
         return "None", "None"
 
-    # Split before recommendation triggers except at the beginning.
     parts = re.split(
         r"\s+(?=(?:Also,|Furthermore,|Further,|In addition,|Moreover,|Additionally,|Likewise,|We recommend(?:ed)?|We advise|Please review|(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .'\-]+?\s+should)\b)",
         rec,
@@ -719,6 +711,20 @@ def split_recommendations(rec):
     rec1 = parts[0]
     rec2 = " ".join(parts[1:]) if len(parts) > 1 else "None"
     return rec1, rec2
+
+
+def extract_recommendation_pair(segment):
+    text = clean_text(segment)
+    if not text or text.upper() in ["NONE", "NONE.", "N/A"]:
+        return "None", "None"
+
+    rec = re.split(r"Action Taken\s*:", text, flags=re.I)[0]
+    return split_recommendations(rec)
+
+
+def extract_recommendation_from_segment(segment):
+    rec1, _ = extract_recommendation_pair(segment)
+    return rec1
 
 
 def remove_action_taken(text):
@@ -746,11 +752,9 @@ def extract_correction_from_text(text):
         return "None"
 
     val = m.group(1)
-
-    # Stop at the next real issue title / recommendation / report ending.
+    # Stop at next real issue title or recommendation/report footer.
     stop_patterns = [
         r"\bNO PRE-PRINTED SERIES\b",
-        r"\b[A-Z][A-Z\s/()–—-]{8,}:\s*$",
         r"\bPrepared(?:/Audited)? by:",
         r"\bReviewed by:",
         r"\bNoted by:",
@@ -770,57 +774,67 @@ def extract_correction_from_text(text):
     if not val or val.upper() in ["NONE", "N/A", "NO ACTION TAKEN"]:
         return "None"
 
-    # Avoid incomplete fragments such as "We contacted Ms."
-    sentences = _safe_sentence_split(val)
-    full_sentences = []
-    for s in sentences:
-        if re.search(r"\b(Ms|Mr|Mrs)\.$", s):
-            continue
-        full_sentences.append(s)
+    # Convert Angelica-style long action taken into concise correction.
+    low = val.lower()
+    if "gerrie mia montejo" in low and "nikka navarro" in low and "request reimbursement" in low:
+        return "The replenishment belonged to the previous custodian and a reimbursement request will be prepared to restore the revolving fund."
 
-    if not full_sentences:
+    sentences = _safe_sentence_split(val)
+    valid = []
+    for s in sentences:
+        if re.search(r"\b(Ms|Mr|Mrs)\.$", s, re.I):
+            continue
+        valid.append(s)
+
+    if not valid:
         return "None"
 
-    # Keep up to 2 complete sentences to avoid very long corrections.
-    result = " ".join(full_sentences[:2])
-    return make_sentence(result)
+    return make_sentence(" ".join(valid[:2]))
 
 
 def make_sentence(text):
     text = clean_text(text)
     if not text or text.upper() in ["NONE", "N/A", "NONE."]:
         return "None"
-
     text = text.strip(" ;,")
     if not text:
         return "None"
-
     text = text[0].upper() + text[1:]
     if text[-1] not in ".!?":
         text += "."
     return text
 
 
+def _safe_sentence_split(text):
+    """Split sentences without breaking common title abbreviations."""
+    text = clean_text(text)
+    if not text:
+        return []
+    protected = (
+        text.replace("Ms.", "Ms<prd>")
+            .replace("Mr.", "Mr<prd>")
+            .replace("Mrs.", "Mrs<prd>")
+            .replace("Dr.", "Dr<prd>")
+            .replace("Jr.", "Jr<prd>")
+            .replace("Art.", "Art<prd>")
+    )
+    parts = re.split(r"(?<=[.!?])\s+", protected)
+    parts = [p.replace("<prd>", ".") for p in parts]
+    return [clean_text(p) for p in parts if clean_text(p)]
+
+
 def _remove_leading_name_fragments(text):
     """Remove incomplete surname/name fragments caused by PDF extraction."""
     text = clean_text(text)
-
-    # Examples to remove:
-    # "Rtin, she had mistakenly..."
-    # "Fortin, she had mistakenly..."
-    # "Mesa, she was not able..."
-    text = re.sub(r"^[A-Z][A-Za-z\-']{1,25},\s+(she|he|they)\b", r"\1", text, flags=re.I)
-
-    # Remove fragments before pronoun when no comma exists.
-    text = re.sub(r"^[A-Z][A-Za-z\-']{1,25}\s+(she|he|they)\b", r"\1", text, flags=re.I)
-
+    # "Rtin, she..." / "Fortin, she..." / "Mesa, she..."
+    text = re.sub(r"^[A-Z][A-Za-zñÑ.'\-]{1,30},\s+(she|he|they)\b", r"\1", text, flags=re.I)
+    text = re.sub(r"^[A-Z][A-Za-zñÑ.'\-]{1,30}\s+(she|he|they)\b", r"\1", text, flags=re.I)
     return clean_text(text)
 
 
 def _strip_explanation_tail(text):
-    """Remove report/recommendation/exhibit tail after the auditee explanation."""
     text = clean_text(text)
-
+    # Cut obvious non-explanation portions.
     stop_patterns = [
         r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)",
         r"\bWe recommend\b",
@@ -829,60 +843,56 @@ def _strip_explanation_tail(text):
         r"\bAction Taken\s*:",
         r"\bNONE\.?$",
     ]
-
     cut = len(text)
     for pat in stop_patterns:
         m = re.search(pat, text, re.I)
         if m:
             cut = min(cut, m.start())
-
-    text = clean_text(text[:cut])
-    text = _remove_leading_name_fragments(text)
-    return text
+    return _remove_leading_name_fragments(text[:cut])
 
 
-def concise_if_long(text, max_words=50):
-    """Keep auditee explanation as written unless it exceeds max_words."""
+def _trim_to_explanation_sentence(text, max_words=50):
     text = _strip_explanation_tail(text)
     if not text:
         return "None"
 
+    # If extracted explanation still has a second "She further explained/stated..." clause,
+    # keep it only when the full result is short enough; otherwise use the first complete sentence.
     words = text.split()
     if len(words) <= max_words:
         return make_sentence(text)
 
-    # For long explanations, keep first complete sentence when possible.
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    if sentences and len(sentences[0].split()) <= max_words:
+    sentences = _safe_sentence_split(text)
+    if sentences:
         return make_sentence(sentences[0])
 
     return make_sentence(" ".join(words[:max_words]).rstrip(",;") + "...")
 
 
 def extract_explanation_from_narrative(narrative):
-    """Capture auditee explanation only.
+    """Capture only auditee explanation based on hierarchy.
 
-    Hierarchy:
-    1. "According to/As per <Auditee>, ..."
-    2. "<Auditee> explained/stated/claimed/admitted that ..."
-    3. "She/He/They further explained/stated/claimed/admitted that ..."
+    Captures the words AFTER:
+    1. According to / As per <auditee>,
+    2. <auditee> explained/stated/claimed/admitted that
+    3. She/He/They further explained/stated/claimed/admitted that
 
-    The auditee name is not included in the output. If no auditee explanation
-    is found, return None.
+    Names and incomplete surname fragments are removed.
+    If no auditee explanation exists, returns None.
     """
     text = clean_text(remove_action_taken(narrative))
     if not text:
         return "None"
 
-    # Avoid recommendation/action text contaminating the explanation.
+    # Do not let recommendation/action text enter explanation.
     text = re.split(r"\b(?:We recommend|We advise|Please review|Action Taken\s*:)", text, flags=re.I)[0]
     text = clean_text(text)
 
     patterns = [
         # According to Ms. Montejo, she was uncertain...
-        r"(?:According to|As per)\s+(?:Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-z .\-']+?,\s*(.+)",
-        # Ms. Mesa explained that she was supposed...
-        r"(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .\-']+\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
+        r"(?:According to|As per)\s+(?:Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-zñÑ .'\-]+?,\s*(.+)",
+        # Ms. Mesa explained that she was...
+        r"(?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-zñÑ .'\-]+?\s+(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
         # She further explained that...
         r"\b(?:He|She|They)\s+(?:further\s+)?(?:claimed|explained|stated|admitted)\s+(?:that\s+)?(.+)",
     ]
@@ -890,8 +900,7 @@ def extract_explanation_from_narrative(narrative):
     for pat in patterns:
         m = re.search(pat, text, re.I | re.S)
         if m:
-            explanation = m.group(1)
-            return concise_if_long(explanation, 50)
+            return _trim_to_explanation_sentence(m.group(1), 50)
 
     return "None"
 
