@@ -86,6 +86,8 @@ if not MASTER_DATA_PATH.exists():
     st.stop()
 
 master_df, master_sheets = load_master_data(str(MASTER_DATA_PATH))
+auditors_df = master_sheets.get("Auditors", pd.DataFrame())
+auditor_options = auditors_df["Auditor"].dropna().astype(str).tolist() if not auditors_df.empty and "Auditor" in auditors_df.columns else AUDITORS
 
 st.subheader("System Status")
 col1, col2, col3 = st.columns(3)
@@ -110,7 +112,7 @@ if pdf_files:
             try:
                 status.write(f"Processing {idx} of {len(pdf_files)}: {pdf_file.name}")
 
-                result_df, header, items = build_records(pdf_file, master_df)
+                result_df, header, items = build_records(pdf_file, master_df, auditors_df=auditors_df)
 
                 all_results.append(result_df)
 
@@ -141,7 +143,7 @@ if pdf_files:
                     ),
                     "Audited By1": st.column_config.SelectboxColumn(
                         "Audited By1",
-                        options=[""] + AUDITORS,
+                        options=[""] + auditor_options,
                     ),
                     "Reaction": st.column_config.SelectboxColumn(
                         "Reaction",
