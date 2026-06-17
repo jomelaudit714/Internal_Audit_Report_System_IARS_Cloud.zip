@@ -13,9 +13,15 @@ HEADERS = [
 ]
 
 AUDITORS = [
-    "Noel Buena", "Jomel Santiago", "Trece Generato Jr.", "Antonio P. Bides",
-    "Jed Laserna", "Cris Canonoy", "Joshua Christopher Catis",
-    "Sarina Amuraw", "Patricia Anne Del Rosario",
+    "Noel Buena",
+    "Jomel Santiago",
+    "Sarina Amuraw",
+    "Patricia Anne S. Del Rosario",
+    "Cris Canonoy",
+    "Antonio P. Bides",
+    "Jed Laserna",
+    "Antonio Trece Generato Jr.",
+    "Joshua Christopher Catis",
 ]
 
 FINDINGS_DROPDOWN = [
@@ -213,19 +219,111 @@ def extract_header(text):
     }
 
 
-def prepared_by_auditor(text):
+def normalize_for_match(value):
+    """Normalize names for robust matching."""
+    return re.sub(r"[^A-Z0-9 ]", " ", clean_text(value).upper()).strip()
+
+
+def load_auditor_records(auditors_df=None):
+    """Return auditor records from Master Data Auditors sheet.
+
+    Expected columns: Auditor, User, Status.
+    Falls back to hardcoded AUDITORS if sheet is unavailable.
+    """
+    records = []
+
+    if auditors_df is not None and not getattr(auditors_df, "empty", True):
+        for _, r in auditors_df.iterrows():
+            auditor = clean_text(r.get("Auditor", ""))
+            if not auditor:
+                continue
+
+            status = clean_text(r.get("Status", "Active"))
+            if status and status.lower() not in ["active", ""]:
+                continue
+
+            user = clean_text(r.get("User", ""))
+            records.append({
+                "auditor": auditor,
+                "user": user or auditor.split()[0],
+                "norm": normalize_for_match(auditor),
+            })
+
+    if not records:
+        for auditor in AUDITORS:
+            records.append({
+                "auditor": auditor,
+                "user": auditor.split()[0],
+                "norm": normalize_for_match(auditor),
+            })
+
+    return records
+
+
+def prepared_by_auditor(text, auditors_df=None):
+    """Detect Prepared/Audited By name from PDF and return canonical Auditor name from Master Data."""
+    # Do not stop at Noted by because PDF table extraction can place "Noted by:" beside Prepared by.
     m = re.search(
-        r"Prepared(?:/Audited)? by\s*:\s*(.+?)(?:Reviewed by|Noted by|cc:|Audit/file|$)",
+        r"Prepared(?:/Audited)? by\s*:\s*(.+?)(?:Reviewed by|cc:|Audit/file|$)",
         text,
         re.I | re.S,
     )
-    area = (m.group(1) if m else "").upper()
-    candidates = []
-    for auditor in AUDITORS:
-        words = [w for w in re.sub(r"[^A-Za-z ]", " ", auditor).upper().split() if len(w) > 2]
-        if words and words[0] in area and words[-1] in area:
-            candidates.append((area.find(words[0]), auditor))
-    return sorted(candidates)[0][1] if candidates else "None"
+
+    area = m.group(1) if m else text
+    area_norm = normalize_for_match(area)
+
+    matches = []
+    for rec in load_auditor_records(auditors_df):
+        norm_name = rec["norm"]
+        tokens = [t for t in norm_name.split() if len(t) > 1]
+
+        positions = []
+
+        # Exact normalized name match.
+        pos = area_norm.find(norm_name)
+        if pos >= 0:
+            positions.append(pos)
+
+        # First + last token match handles middle initials and punctuation.
+        if len(tokens) >= 2:
+            first, last = tokens[0], tokens[-1]
+            pos_first = area_norm.find(first)
+            pos_last = area_norm.find(last)
+            if pos_first >= 0 and pos_last >= 0 and pos_first <= pos_last:
+                positions.append(pos_first)
+
+        # Multi-token partial match: useful for names like Patricia Anne S. Del Rosario.
+        hit_count = sum(1 for t in tokens if t in area_norm)
+        if tokens and hit_count >= min(len(tokens), 3):
+            found_positions = [area_norm.find(t) for t in tokens if area_norm.find(t) >= 0]
+            if found_positions:
+                positions.append(min(found_positions))
+
+        if positions:
+            matches.append((min(positions), -len(norm_name), rec["auditor"]))
+
+    if matches:
+        return sorted(matches)[0][2]
+
+    return "None"
+
+
+def auditor_user(auditor, auditors_df=None):
+    """Return User column from Master Data Auditors sheet for the detected auditor."""
+    auditor_norm = normalize_for_match(auditor)
+
+    for rec in load_auditor_records(auditors_df):
+        if rec["norm"] == auditor_norm:
+            return rec["user"]
+
+    # fallback first/last matching
+    auditor_tokens = [t for t in auditor_norm.split() if len(t) > 1]
+    for rec in load_auditor_records(auditors_df):
+        rec_tokens = [t for t in rec["norm"].split() if len(t) > 1]
+        if auditor_tokens and rec_tokens and auditor_tokens[0] == rec_tokens[0] and auditor_tokens[-1] == rec_tokens[-1]:
+            return rec["user"]
+
+    return auditor.split()[0] if auditor and auditor != "None" else "None"
 
 
 def extract_money_amounts(value):
@@ -458,18 +556,99 @@ def extract_correction_from_text(text):
     return "None" if not val or val.upper() in ["NONE", "N/A", "NO ACTION TAKEN"] else val
 
 
+def make_sentence(text):
+    text = clean_text(text)
+    if not text or text.upper() in ["NONE", "N/A", "NONE."]:
+        return "None"
+
+    text = text.strip(" ;,")
+    if not text:
+        return "None"
+
+    text = text[0].upper() + text[1:]
+    if text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def simplify_auditee_explanation(text):
+    """Convert auditee explanation into a concise, readable sentence."""
+    text = clean_text(text)
+    if not text:
+        return "None"
+
+    text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
+    text = clean_text(text)
+
+    lower = text.lower()
+
+    # Common specific audit explanations.
+    if "personal cash" in lower and ("overlooked" in lower or "receipt" in lower):
+        return "Personal cash was included due to an overlooked receipt."
+
+    if "not able to prepare" in lower and "pcv" in lower and ("pcr" in lower or "petty cash request" in lower) and "submitted late" in lower:
+        return "The PCR was submitted late, resulting in delayed preparation of the PCV."
+
+    if "without the corresponding pcr" in lower or "does not prepare a pcv without" in lower:
+        return "The PCV was not prepared because the corresponding PCR was not yet available."
+
+    if "supposed to stamp" in lower and "stamp" in lower:
+        return "The supporting document was not stamped before the audit."
+
+    if "avoid revisions" in lower and "pcr" in lower:
+        return "The PCR was prepared upon liquidation to avoid revisions to the requested amount."
+
+    if "personal funds" in lower and "bank account" in lower:
+        return "Personal funds were included in the bank account used for the cash advance."
+
+    # Remove auditee name/starter but preserve meaning.
+    text = re.sub(
+        r"^(Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .]+?\s+(explained|stated|claimed|admitted)\s+that\s+",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"^(According to|As per)\s+(Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-z .]+?,?\s*",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"^(she|he|they)\s+(explained|stated|claimed|admitted)\s+that\s+", "", text, flags=re.I)
+
+    # Keep only first clear sentence, but avoid broken fragments.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    first = clean_text(sentences[0]) if sentences else text
+
+    # Limit length without cutting mid-thought too harshly.
+    words = first.split()
+    if len(words) > 26:
+        first = " ".join(words[:26]).rstrip(",;") + "..."
+
+    return make_sentence(first)
+
+
 def extract_explanation_from_narrative(narrative):
+    """Capture auditee explanation only.
+
+    If no auditee explanation is found, return None.
+    """
     text = clean_text(remove_action_taken(narrative))
-    text = re.sub(r"\(See Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
+    if not text:
+        return "None"
+
+    # Capture only explanation statements from auditee or "According to/As per".
     patterns = [
-        r"((?:Mr\.|Ms\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated|admitted)\s+.+)",
-        r"((?:According to|As per)\s+.+)",
-        r"((?:He|She|They)\s+(?:claimed|explained|stated|admitted)\s+.+)",
+        r"((?:Mr\.|Ms\.|Mrs\.)\s+[A-Z][A-Za-z .]+?\s+(?:claimed|explained|stated|admitted)\s+.+?)(?=(?:\s+We recommend|\s+We advise|\s+Please review|\s+Action Taken:|\s+\d+\.|\Z))",
+        r"((?:According to|As per)\s+.+?)(?=(?:\s+We recommend|\s+We advise|\s+Please review|\s+Action Taken:|\s+\d+\.|\Z))",
+        r"((?:He|She|They)\s+(?:claimed|explained|stated|admitted)\s+.+?)(?=(?:\s+We recommend|\s+We advise|\s+Please review|\s+Action Taken:|\s+\d+\.|\Z))",
     ]
+
     for pat in patterns:
-        m = re.search(pat, text, re.I)
+        m = re.search(pat, text, re.I | re.S)
         if m:
-            return clean_text(m.group(1))
+            return simplify_auditee_explanation(m.group(1))
+
     return "None"
 
 
@@ -568,8 +747,15 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
-    if any(k in issue_lower for k in ["no document used", "undocumented", "without document"]):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+    if any(k in issue_lower for k in ["no document used for cash taken from the fund", "cash taken without document", "no document used"]):
+        if any(k in combined for k in ["lost document", "missing document", "cannot produce", "unable to locate", "misused document"]):
+            return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in ["undocumented", "without document"]):
+        if any(k in combined for k in ["lost document", "missing document", "cannot produce", "unable to locate", "misused document"]):
+            return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
 
     if any(k in issue_lower for k in ["inaccurate monitoring", "outdated monitoring", "no daily balancing", "no monitoring", "incomplete monitoring", "delayed recording"]):
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "proper procedure"]):
@@ -636,8 +822,15 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
             return "Nonconformity With The Written Policies, Guidelines, Process And Procedures -4"
         return "Ignore or Disregard Office/Operation Best Practices -3"
 
-    if any(k in issue_lower for k in ["no document used", "undocumented", "without document"]):
-        return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+    if any(k in issue_lower for k in ["no document used for cash taken from the fund", "cash taken without document", "no document used"]):
+        if any(k in combined for k in ["lost document", "missing document", "cannot produce", "unable to locate", "misused document"]):
+            return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
+
+    if any(k in issue_lower for k in ["undocumented", "without document"]):
+        if any(k in combined for k in ["lost document", "missing document", "cannot produce", "unable to locate", "misused document"]):
+            return "Missing, Misused or Lost Of Documents/Asset(s) -3"
+        return "Ignore or Disregard Office/Operation Best Practices -3"
 
     if any(k in issue_lower for k in ["inaccurate monitoring", "outdated monitoring", "no daily balancing", "no monitoring", "incomplete monitoring", "delayed recording"]):
         if any(k in combined for k in ["policy", "procedure", "sop", "guideline", "proper procedure"]):
@@ -767,13 +960,13 @@ def concise_text(text, max_words=25, field="general"):
 
     words = text.split()
     if len(words) <= max_words:
-        return text
+        return make_sentence(text)
 
     sentences = re.split(r"(?<=[.!?])\s+", text)
     if sentences and len(sentences[0].split()) <= max_words:
-        return sentences[0].strip()
+        return make_sentence(sentences[0].strip())
 
-    return " ".join(words[:max_words]).rstrip(",;") + "..."
+    return make_sentence(" ".join(words[:max_words]).rstrip(",;") + "...")
 
 
 def extract_accountability_amount(text):
@@ -998,11 +1191,11 @@ def classify_audit_type(text):
     return "Operations Audit" if any(t in text.lower() for t in sales_terms) else "Financial Audit"
 
 
-def build_records(pdf_file, master_df=None, manual_df=None):
+def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
     text = extract_all_text(pdf_file)
     header = extract_header(text)
     emp_id, emp_name = match_employee(master_df, header["auditee_name"])
-    auditor_default = prepared_by_auditor(text)
+    auditor_default = prepared_by_auditor(text, auditors_df)
     audit_type = classify_audit_type(text)
     items = extract_finding_rows_from_pdf(pdf_file)
 
@@ -1054,7 +1247,7 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         improve = RESPONSE_RATE.get(reaction, 0) * FREQUENCY_RATE.get(frequency, 1)
         net = score + improve
         case_status = "No Case/Issue" if ("No Findings" in findings or "Immaterial Findings" in findings) else "Follow-up with HR"
-        user = auditor.split()[0] if auditor and auditor != "None" else "None"
+        user = auditor_user(auditor, auditors_df)
 
         row_dicts.append({
             "row_no": row_no,
@@ -1117,7 +1310,7 @@ def build_records(pdf_file, master_df=None, manual_df=None):
         improve = RESPONSE_RATE.get(reaction, 0) * FREQUENCY_RATE.get(frequency, 1)
         net = score + improve
         case_status = "No Case/Issue" if ("No Findings" in findings or "Immaterial Findings" in findings) else "Follow-up with HR"
-        user = auditor.split()[0] if auditor and auditor != "None" else "None"
+        user = auditor_user(auditor, auditors_df)
 
         rows.append([
             row_no, date.today().isoformat(), audit_type, header["date_reported"],
