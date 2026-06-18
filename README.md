@@ -99,3 +99,21 @@ What it does:
 5. Upload the tagged PDF in the `Generate Extraction` tab.
 
 This is intended to replace handwritten tags and improve extraction accuracy because typed PDF text is easier to read than handwriting/OCR.
+
+
+## PDF Tagging Editor - Click Popup Version
+
+This version improves the tagging workflow:
+1. Open the `PDF Tagging Editor` tab.
+2. Upload the PDF.
+3. Click the exact location on the page where the label should appear.
+4. A tag form appears on the right.
+5. Choose tag type and enter value, e.g.:
+   - `Task ID: 001`
+   - `Auditor: Sarina Amuraw`
+   - `Auditee: Emerito Bondoc`
+6. Click `Save Tag Here`.
+7. Generate and download the tagged PDF.
+8. Upload the tagged PDF in `Generate Extraction`.
+
+If the clickable preview component is unavailable, the system still provides manual X/Y fields.

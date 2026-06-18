@@ -167,10 +167,11 @@ auditor_options = auditors_df["Auditor"].dropna().astype(str).tolist() if not au
 
 tab_extract, tab_editor = st.tabs(["Generate Extraction", "PDF Tagging Editor"])
 
+
 with tab_editor:
     st.subheader("PDF Tagging Editor")
     st.caption(
-        "Use this instead of handwriting. Add typed labels such as Task ID, Auditor, and Auditee directly onto the PDF, then use the tagged PDF for extraction."
+        "Use this instead of handwriting. Click the PDF preview, type the tag in the popup form, then generate a tagged PDF."
     )
 
     tag_pdf = st.file_uploader(
@@ -191,67 +192,246 @@ with tab_editor:
             page_count = 0
 
         if page_count:
-            col_a, col_b = st.columns([1, 1])
-            with col_a:
-                preview_page = st.number_input("Preview page", min_value=1, max_value=page_count, value=1, step=1)
-                preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1)
+            if "tag_rows" not in st.session_state:
+                st.session_state["tag_rows"] = pd.DataFrame(
+                    columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size"]
+                )
+            if "pending_click" not in st.session_state:
+                st.session_state["pending_click"] = None
 
-                if preview_img is not None:
-                    st.image(preview_img, caption=f"Page {preview_page} preview")
-                else:
-                    st.warning("Preview requires PyMuPDF and Pillow.")
+            st.info(
+                "Workflow: choose a page → click where the label should appear → fill in the popup form → save tag → generate tagged PDF."
+            )
 
-            with col_b:
-                st.markdown("### Add tag")
-                tag_type = st.selectbox(
-                    "Tag type",
-                    ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
-                    key="single_tag_type",
+            col_left, col_right = st.columns([1.25, 1])
+
+            with col_left:
+                preview_page = st.number_input(
+                    "Page to tag",
+                    min_value=1,
+                    max_value=page_count,
+                    value=1,
+                    step=1,
+                    key="click_preview_page",
                 )
 
-                if tag_type == "Auditor":
-                    tag_value = st.selectbox("Value", [""] + auditor_options, key="single_tag_value_auditor")
-                elif tag_type == "Reaction":
-                    tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS, key="single_tag_value_reaction")
-                elif tag_type == "Frequency Rate":
-                    tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS, key="single_tag_value_frequency")
+                preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1)
+
+                st.markdown("#### Click on the page")
+                st.caption("After clicking, a tag form will appear on the right.")
+
+                clicked_x = None
+                clicked_y = None
+
+                try:
+                    from streamlit_image_coordinates import streamlit_image_coordinates
+
+                    if preview_img is not None:
+                        click = streamlit_image_coordinates(
+                            preview_img,
+                            key=f"pdf_click_coordinates_{preview_page}",
+                        )
+
+                        if click is not None:
+                            clicked_x = float(click.get("x", 0))
+                            clicked_y = float(click.get("y", 0))
+                            img_w, img_h = preview_img.size
+                            st.session_state["pending_click"] = {
+                                "page": int(preview_page),
+                                "x_percent": round((clicked_x / img_w) * 100, 2),
+                                "y_percent": round((clicked_y / img_h) * 100, 2),
+                            }
+
+                    else:
+                        st.warning("Preview requires PyMuPDF and Pillow.")
+
+                except Exception:
+                    if preview_img is not None:
+                        st.image(preview_img, caption=f"Page {preview_page} preview")
+                    st.warning(
+                        "Clickable preview component is not installed. Use manual X/Y fields on the right instead."
+                    )
+
+                # Show current tags for selected page.
+                current_tags = st.session_state["tag_rows"]
+                if not current_tags.empty:
+                    page_tags = current_tags[current_tags["Page"].astype(str) == str(int(preview_page))]
+                    if not page_tags.empty:
+                        st.markdown("#### Tags on this page")
+                        st.dataframe(
+                            page_tags[["Label Text", "X %", "Y %"]],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+            with col_right:
+                st.markdown("### Add Tag Popup")
+
+                pending = st.session_state.get("pending_click")
+                if pending:
+                    st.success(
+                        f"Selected location: Page {pending['page']} | X {pending['x_percent']}% | Y {pending['y_percent']}%"
+                    )
+                    default_page = pending["page"]
+                    default_x = pending["x_percent"]
+                    default_y = pending["y_percent"]
                 else:
-                    tag_value = st.text_input("Value", key="single_tag_value_text")
+                    st.caption("No click yet. You may still manually enter the location.")
+                    default_page = int(preview_page)
+                    default_x = 8.0
+                    default_y = 24.0
 
-                x_percent = st.slider("X position (%)", 0.0, 100.0, 8.0, 0.5)
-                y_percent = st.slider("Y position (%)", 0.0, 100.0, 24.0, 0.5)
-                font_size = st.number_input("Font size", min_value=6.0, max_value=24.0, value=11.0, step=1.0)
+                with st.form("click_tag_form", clear_on_submit=False):
+                    form_page = st.number_input(
+                        "Page",
+                        min_value=1,
+                        max_value=page_count,
+                        value=int(default_page),
+                        step=1,
+                    )
 
-                label_text = normalize_tag_text(tag_type, tag_value)
-                st.text_input("Label to insert", value=label_text, key="computed_label_text")
+                    tag_type = st.selectbox(
+                        "Tag Type",
+                        ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
+                    )
 
-                if "tag_rows" not in st.session_state:
-                    st.session_state["tag_rows"] = build_default_tag_rows(page_count)
+                    if tag_type == "Auditor":
+                        tag_value = st.selectbox("Value", [""] + auditor_options)
+                    elif tag_type == "Reaction":
+                        tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
+                    elif tag_type == "Frequency Rate":
+                        tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
+                    else:
+                        tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("Add tag to list"):
+                    cxy1, cxy2 = st.columns(2)
+                    with cxy1:
+                        form_x = st.number_input(
+                            "X position (%)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(default_x),
+                            step=0.5,
+                        )
+                    with cxy2:
+                        form_y = st.number_input(
+                            "Y position (%)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(default_y),
+                            step=0.5,
+                        )
+
+                    font_size = st.number_input(
+                        "Font size",
+                        min_value=6.0,
+                        max_value=24.0,
+                        value=11.0,
+                        step=1.0,
+                    )
+
+                    label_text = normalize_tag_text(tag_type, tag_value)
+                    st.text_input("Text to insert", value=label_text, disabled=True)
+
+                    submitted = st.form_submit_button("Save Tag Here", type="primary")
+
+                if submitted:
+                    if not label_text:
+                        st.warning("Please enter a value before saving the tag.")
+                    else:
                         new_row = pd.DataFrame([{
-                            "Page": int(preview_page),
+                            "Page": int(form_page),
                             "Tag Type": tag_type,
                             "Value": tag_value,
                             "Label Text": label_text,
-                            "X %": float(x_percent),
-                            "Y %": float(y_percent),
+                            "X %": float(form_x),
+                            "Y %": float(form_y),
                             "Font Size": float(font_size),
                         }])
-                        st.session_state["tag_rows"] = pd.concat([st.session_state["tag_rows"], new_row], ignore_index=True)
-                        st.success("Tag added.")
-                with c2:
-                    if st.button("Clear tag list"):
-                        st.session_state["tag_rows"] = pd.DataFrame(
-                            columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size"]
+                        st.session_state["tag_rows"] = pd.concat(
+                            [st.session_state["tag_rows"], new_row],
+                            ignore_index=True,
                         )
+                        st.session_state["pending_click"] = None
+                        st.success(f"Saved: {label_text}")
 
-            st.markdown("### Tags to insert")
-            if "tag_rows" not in st.session_state:
-                st.session_state["tag_rows"] = build_default_tag_rows(page_count)
+                st.divider()
+                st.markdown("### Quick Add Buttons")
+                st.caption("Common tags; click page first, then press one of these buttons.")
 
+                q1, q2, q3 = st.columns(3)
+                with q1:
+                    quick_task = st.text_input("Task ID", value="001", key="quick_task_id")
+                    if st.button("Add Task ID"):
+                        pending = st.session_state.get("pending_click")
+                        if pending:
+                            label_text = f"Task ID: {quick_task}"
+                            new_row = pd.DataFrame([{
+                                "Page": int(pending["page"]),
+                                "Tag Type": "Task ID",
+                                "Value": quick_task,
+                                "Label Text": label_text,
+                                "X %": float(pending["x_percent"]),
+                                "Y %": float(pending["y_percent"]),
+                                "Font Size": 11.0,
+                            }])
+                            st.session_state["tag_rows"] = pd.concat(
+                                [st.session_state["tag_rows"], new_row],
+                                ignore_index=True,
+                            )
+                            st.session_state["pending_click"] = None
+                            st.rerun()
+                        else:
+                            st.warning("Click the PDF page first.")
+                with q2:
+                    quick_auditor = st.selectbox("Auditor", [""] + auditor_options, key="quick_auditor")
+                    if st.button("Add Auditor"):
+                        pending = st.session_state.get("pending_click")
+                        if pending and quick_auditor:
+                            label_text = f"Auditor: {quick_auditor}"
+                            new_row = pd.DataFrame([{
+                                "Page": int(pending["page"]),
+                                "Tag Type": "Auditor",
+                                "Value": quick_auditor,
+                                "Label Text": label_text,
+                                "X %": float(pending["x_percent"]),
+                                "Y %": float(pending["y_percent"]),
+                                "Font Size": 11.0,
+                            }])
+                            st.session_state["tag_rows"] = pd.concat(
+                                [st.session_state["tag_rows"], new_row],
+                                ignore_index=True,
+                            )
+                            st.session_state["pending_click"] = None
+                            st.rerun()
+                        else:
+                            st.warning("Click the PDF page first and select an auditor.")
+                with q3:
+                    quick_auditee = st.text_input("Auditee", value="", key="quick_auditee")
+                    if st.button("Add Auditee"):
+                        pending = st.session_state.get("pending_click")
+                        if pending and quick_auditee:
+                            label_text = f"Auditee: {quick_auditee}"
+                            new_row = pd.DataFrame([{
+                                "Page": int(pending["page"]),
+                                "Tag Type": "Auditee",
+                                "Value": quick_auditee,
+                                "Label Text": label_text,
+                                "X %": float(pending["x_percent"]),
+                                "Y %": float(pending["y_percent"]),
+                                "Font Size": 11.0,
+                            }])
+                            st.session_state["tag_rows"] = pd.concat(
+                                [st.session_state["tag_rows"], new_row],
+                                ignore_index=True,
+                            )
+                            st.session_state["pending_click"] = None
+                            st.rerun()
+                        else:
+                            st.warning("Click the PDF page first and enter an auditee.")
+
+            st.divider()
+            st.markdown("### Tag List")
             tag_rows = st.data_editor(
                 st.session_state["tag_rows"],
                 use_container_width=True,
@@ -269,18 +449,27 @@ with tab_editor:
             )
             st.session_state["tag_rows"] = tag_rows
 
-            if st.button("Generate Tagged PDF", type="primary"):
-                try:
-                    tagged_bytes = stamp_pdf_with_tags(pdf_bytes, tag_rows.to_dict("records"))
-                    st.success("Tagged PDF created. Download it, then upload it in Generate Extraction.")
-                    st.download_button(
-                        "Download Tagged PDF",
-                        data=tagged_bytes,
-                        file_name=f"tagged_{tag_pdf.name}",
-                        mime="application/pdf",
+            cgen, cclear = st.columns([1, 1])
+            with cgen:
+                if st.button("Generate Tagged PDF", type="primary"):
+                    try:
+                        tagged_bytes = stamp_pdf_with_tags(pdf_bytes, tag_rows.to_dict("records"))
+                        st.success("Tagged PDF created. Download it, then upload it in Generate Extraction.")
+                        st.download_button(
+                            "Download Tagged PDF",
+                            data=tagged_bytes,
+                            file_name=f"tagged_{tag_pdf.name}",
+                            mime="application/pdf",
+                        )
+                    except Exception as e:
+                        st.error(f"Unable to generate tagged PDF: {e}")
+            with cclear:
+                if st.button("Clear All Tags"):
+                    st.session_state["tag_rows"] = pd.DataFrame(
+                        columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size"]
                     )
-                except Exception as e:
-                    st.error(f"Unable to generate tagged PDF: {e}")
+                    st.session_state["pending_click"] = None
+                    st.rerun()
 
     else:
         st.info("Upload a PDF to start tagging.")

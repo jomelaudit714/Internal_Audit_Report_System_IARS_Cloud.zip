@@ -6,3 +6,4 @@ pdfplumber
 PyMuPDF
 Pillow
 pytesseract
+streamlit-image-coordinates
