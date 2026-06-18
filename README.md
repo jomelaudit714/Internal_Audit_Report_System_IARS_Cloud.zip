@@ -147,3 +147,13 @@ This version changes the tagging workflow to avoid accidental popup/location cha
 7. Save the tag and generate the tagged PDF.
 
 This makes it easier to confirm the exact tag location before typing the label details.
+
+
+## Cleaner Tag Editor UX
+
+This version improves the PDF Tagging Editor:
+- The tag input form is hidden until a box is placed.
+- The PDF preview stays clear before placement.
+- The box appears first on the PDF preview.
+- Box size can be adjusted before saving the tag.
+- A cancel button removes the current box before saving.

@@ -299,8 +299,8 @@ with tab_editor:
                             preview_img,
                             pending["x_percent"],
                             pending["y_percent"],
-                            box_width_px=260,
-                            box_height_px=38,
+                            box_width_px=int(st.session_state.get("preview_box_width_px", 260)),
+                            box_height_px=int(st.session_state.get("preview_box_height_px", 38)),
                         )
                     else:
                         preview_to_show = preview_img
@@ -353,206 +353,150 @@ with tab_editor:
                         )
 
             with col_right:
-                st.markdown("### Add Text After Box Placement")
-
                 pending = st.session_state.get("pending_click")
-                if pending:
-                    st.success(
-                        f"Box placed: Page {pending['page']} | X {pending['x_percent']}% | Y {pending['y_percent']}%"
+
+                if not pending:
+                    st.markdown("### Place Box First")
+                    st.info(
+                        "No tag box is active. Turn on **Enable box placement mode** on the left, then click the PDF. The input form will appear only after a box is placed."
                     )
+                    st.caption("This prevents accidental popups and keeps the PDF preview clear.")
+                else:
+                    st.markdown("### Box Placed")
+                    st.success(
+                        f"Page {pending['page']} | X {pending['x_percent']}% | Y {pending['y_percent']}%"
+                    )
+
+                    st.markdown("#### Adjust Box Size")
+                    size_col1, size_col2 = st.columns(2)
+                    with size_col1:
+                        st.session_state["preview_box_width_px"] = st.slider(
+                            "Preview box width",
+                            min_value=80,
+                            max_value=520,
+                            value=int(st.session_state.get("preview_box_width_px", 260)),
+                            step=10,
+                        )
+                    with size_col2:
+                        st.session_state["preview_box_height_px"] = st.slider(
+                            "Preview box height",
+                            min_value=22,
+                            max_value=90,
+                            value=int(st.session_state.get("preview_box_height_px", 38)),
+                            step=2,
+                        )
+
+                    st.caption("Resize the box here before saving. The box preview will update on the PDF.")
+
                     default_page = pending["page"]
                     default_x = pending["x_percent"]
                     default_y = pending["y_percent"]
-                else:
-                    st.caption("No box placed yet. Enable box placement mode and click the PDF, or manually enter X/Y.")
-                    default_page = int(preview_page)
-                    default_x = 8.0
-                    default_y = 24.0
 
-                with st.form("click_tag_form", clear_on_submit=False):
-                    form_page = st.number_input(
-                        "Page",
-                        min_value=1,
-                        max_value=page_count,
-                        value=int(default_page),
-                        step=1,
-                    )
-
-                    tag_type = st.selectbox(
-                        "Tag Type",
-                        ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
-                    )
-
-                    if tag_type == "Auditor":
-                        tag_value = st.selectbox("Value", [""] + auditor_options)
-                    elif tag_type == "Reaction":
-                        tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
-                    elif tag_type == "Frequency Rate":
-                        tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
-                    else:
-                        tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
-
-                    cxy1, cxy2 = st.columns(2)
-                    with cxy1:
-                        form_x = st.number_input(
-                            "X position (%)",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=float(default_x),
-                            step=0.5,
-                        )
-                    with cxy2:
-                        form_y = st.number_input(
-                            "Y position (%)",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=float(default_y),
-                            step=0.5,
+                    with st.form("click_tag_form", clear_on_submit=False):
+                        form_page = st.number_input(
+                            "Page",
+                            min_value=1,
+                            max_value=page_count,
+                            value=int(default_page),
+                            step=1,
                         )
 
-                    font_size = st.number_input(
-                        "Font size",
-                        min_value=6.0,
-                        max_value=24.0,
-                        value=11.0,
-                        step=1.0,
-                    )
+                        tag_type = st.selectbox(
+                            "Tag Type",
+                            ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
+                        )
 
-                    style = st.selectbox(
-                        "Display style",
-                        ["Box", "Highlight Box", "Plain Text"],
-                        index=0,
-                    )
+                        if tag_type == "Auditor":
+                            tag_value = st.selectbox("Value", [""] + auditor_options)
+                        elif tag_type == "Reaction":
+                            tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
+                        elif tag_type == "Frequency Rate":
+                            tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
+                        else:
+                            tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
 
-                    bw_col, bh_col = st.columns(2)
-                    with bw_col:
+                        cxy1, cxy2 = st.columns(2)
+                        with cxy1:
+                            form_x = st.number_input(
+                                "X position (%)",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(default_x),
+                                step=0.5,
+                            )
+                        with cxy2:
+                            form_y = st.number_input(
+                                "Y position (%)",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(default_y),
+                                step=0.5,
+                            )
+
+                        font_size = st.number_input(
+                            "Font size",
+                            min_value=6.0,
+                            max_value=24.0,
+                            value=11.0,
+                            step=1.0,
+                        )
+
+                        style = st.selectbox(
+                            "Display style",
+                            ["Box", "Highlight Box", "Plain Text"],
+                            index=0,
+                        )
+
+                        # Convert preview pixel size to PDF point-like size.
+                        # This is approximate but stable and editable in the tag list after saving.
                         box_width = st.number_input(
-                            "Box width",
+                            "Final PDF box width",
                             min_value=60.0,
                             max_value=500.0,
-                            value=220.0,
+                            value=float(st.session_state.get("preview_box_width_px", 260)) * 0.75,
                             step=10.0,
                         )
-                    with bh_col:
                         box_height = st.number_input(
-                            "Box height",
+                            "Final PDF box height",
                             min_value=16.0,
                             max_value=80.0,
-                            value=24.0,
+                            value=max(20.0, float(st.session_state.get("preview_box_height_px", 38)) * 0.65),
                             step=2.0,
                         )
 
-                    label_text = normalize_tag_text(tag_type, tag_value)
-                    st.text_input("Text to insert", value=label_text, disabled=True)
+                        label_text = normalize_tag_text(tag_type, tag_value)
+                        st.text_input("Text to insert", value=label_text, disabled=True)
 
-                    submitted = st.form_submit_button("Save Tag Here", type="primary")
+                        submitted = st.form_submit_button("Save Tag Here", type="primary")
 
-                if submitted:
-                    if not label_text:
-                        st.warning("Please enter a value before saving the tag.")
-                    else:
-                        new_row = pd.DataFrame([{
-                            "Page": int(form_page),
-                            "Tag Type": tag_type,
-                            "Value": tag_value,
-                            "Label Text": label_text,
-                            "X %": float(form_x),
-                            "Y %": float(form_y),
-                            "Font Size": float(font_size),
-                            "Style": style,
-                            "Box Width": float(box_width),
-                            "Box Height": float(box_height),
-                        }])
-                        st.session_state["tag_rows"] = pd.concat(
-                            [st.session_state["tag_rows"], new_row],
-                            ignore_index=True,
-                        )
+                    if submitted:
+                        if not label_text:
+                            st.warning("Please enter a value before saving the tag.")
+                        else:
+                            new_row = pd.DataFrame([{
+                                "Page": int(form_page),
+                                "Tag Type": tag_type,
+                                "Value": tag_value,
+                                "Label Text": label_text,
+                                "X %": float(form_x),
+                                "Y %": float(form_y),
+                                "Font Size": float(font_size),
+                                "Style": style,
+                                "Box Width": float(box_width),
+                                "Box Height": float(box_height),
+                            }])
+                            st.session_state["tag_rows"] = pd.concat(
+                                [st.session_state["tag_rows"], new_row],
+                                ignore_index=True,
+                            )
+                            st.session_state["pending_click"] = None
+                            st.success(f"Saved: {label_text}")
+                            st.rerun()
+
+                    st.divider()
+                    if st.button("Cancel Current Box"):
                         st.session_state["pending_click"] = None
-                        st.success(f"Saved: {label_text}")
-
-                st.divider()
-                st.markdown("### Quick Add Buttons")
-                st.caption("Common tags; click page first, then press one of these buttons.")
-
-                q1, q2, q3 = st.columns(3)
-                with q1:
-                    quick_task = st.text_input("Task ID", value="001", key="quick_task_id")
-                    if st.button("Add Task ID"):
-                        pending = st.session_state.get("pending_click")
-                        if pending:
-                            label_text = f"Task ID: {quick_task}"
-                            new_row = pd.DataFrame([{
-                                "Page": int(pending["page"]),
-                                "Tag Type": "Task ID",
-                                "Value": quick_task,
-                                "Label Text": label_text,
-                                "X %": float(pending["x_percent"]),
-                                "Y %": float(pending["y_percent"]),
-                                "Font Size": 11.0,
-                                "Style": "Box",
-                                "Box Width": 160.0,
-                                "Box Height": 24.0,
-                            }])
-                            st.session_state["tag_rows"] = pd.concat(
-                                [st.session_state["tag_rows"], new_row],
-                                ignore_index=True,
-                            )
-                            st.session_state["pending_click"] = None
-                            st.rerun()
-                        else:
-                            st.warning("Click the PDF page first.")
-                with q2:
-                    quick_auditor = st.selectbox("Auditor", [""] + auditor_options, key="quick_auditor")
-                    if st.button("Add Auditor"):
-                        pending = st.session_state.get("pending_click")
-                        if pending and quick_auditor:
-                            label_text = f"Auditor: {quick_auditor}"
-                            new_row = pd.DataFrame([{
-                                "Page": int(pending["page"]),
-                                "Tag Type": "Auditor",
-                                "Value": quick_auditor,
-                                "Label Text": label_text,
-                                "X %": float(pending["x_percent"]),
-                                "Y %": float(pending["y_percent"]),
-                                "Font Size": 11.0,
-                                "Style": "Box",
-                                "Box Width": 280.0,
-                                "Box Height": 24.0,
-                            }])
-                            st.session_state["tag_rows"] = pd.concat(
-                                [st.session_state["tag_rows"], new_row],
-                                ignore_index=True,
-                            )
-                            st.session_state["pending_click"] = None
-                            st.rerun()
-                        else:
-                            st.warning("Click the PDF page first and select an auditor.")
-                with q3:
-                    quick_auditee = st.text_input("Auditee", value="", key="quick_auditee")
-                    if st.button("Add Auditee"):
-                        pending = st.session_state.get("pending_click")
-                        if pending and quick_auditee:
-                            label_text = f"Auditee: {quick_auditee}"
-                            new_row = pd.DataFrame([{
-                                "Page": int(pending["page"]),
-                                "Tag Type": "Auditee",
-                                "Value": quick_auditee,
-                                "Label Text": label_text,
-                                "X %": float(pending["x_percent"]),
-                                "Y %": float(pending["y_percent"]),
-                                "Font Size": 11.0,
-                                "Style": "Box",
-                                "Box Width": 230.0,
-                                "Box Height": 24.0,
-                            }])
-                            st.session_state["tag_rows"] = pd.concat(
-                                [st.session_state["tag_rows"], new_row],
-                                ignore_index=True,
-                            )
-                            st.session_state["pending_click"] = None
-                            st.rerun()
-                        else:
-                            st.warning("Click the PDF page first and enter an auditee.")
+                        st.rerun()
 
             st.divider()
             st.markdown("### Tag List")
