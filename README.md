@@ -133,3 +133,17 @@ When a tag is inserted, the generated PDF can show:
 - adjustable font size.
 
 This makes the tag location easier to review in the PDF.
+
+
+## Box Placement Before Input
+
+This version changes the tagging workflow to avoid accidental popup/location changes:
+1. Upload PDF in `PDF Tagging Editor`.
+2. Choose page.
+3. Turn on `Enable box placement mode`.
+4. Click the PDF once.
+5. A visible temporary box appears on the PDF preview.
+6. Enter the tag details on the right panel.
+7. Save the tag and generate the tagged PDF.
+
+This makes it easier to confirm the exact tag location before typing the label details.

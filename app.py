@@ -64,6 +64,36 @@ def render_pdf_page(pdf_bytes: bytes, page_no: int, zoom: float = 1.4):
     return img, page.rect.width, page.rect.height
 
 
+def draw_preview_box(img, x_percent, y_percent, box_width_px=220, box_height_px=32):
+    """Draw a visible temporary box on the preview image before saving the tag."""
+    try:
+        from PIL import ImageDraw
+    except Exception:
+        return img
+
+    if img is None:
+        return img
+
+    preview = img.copy()
+    draw = ImageDraw.Draw(preview)
+    img_w, img_h = preview.size
+
+    x = float(x_percent) / 100 * img_w
+    y = float(y_percent) / 100 * img_h
+
+    rect = [
+        x,
+        y - box_height_px / 2,
+        min(img_w - 1, x + box_width_px),
+        min(img_h - 1, y + box_height_px / 2),
+    ]
+
+    # Multiple outlines make it visible without relying on a specific color too much.
+    draw.rectangle(rect, outline="black", width=3)
+    draw.rectangle([rect[0]+3, rect[1]+3, rect[2]-3, rect[3]-3], outline="white", width=2)
+    return preview
+
+
 def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
     """Insert typed tags into the PDF at normalized positions.
 
@@ -235,7 +265,7 @@ with tab_editor:
                 st.session_state["pending_click"] = None
 
             st.info(
-                "Workflow: choose a page → click where the label should appear → fill in the popup form → save tag → generate tagged PDF."
+                "Workflow: choose a page → enable box placement mode → click the PDF to show a box → enter tag details → save tag → generate tagged PDF."
             )
 
             col_left, col_right = st.columns([1.25, 1])
@@ -255,34 +285,57 @@ with tab_editor:
                 st.markdown("#### Click on the page")
                 st.caption("After clicking, a tag form will appear on the right.")
 
-                clicked_x = None
-                clicked_y = None
+                # Placement is now intentional to avoid accidental popup/location changes.
+                place_mode = st.checkbox(
+                    "Enable box placement mode",
+                    value=False,
+                    help="Turn this on first, then click the PDF to place a temporary box.",
+                )
+
+                if st.session_state.get("pending_click"):
+                    pending = st.session_state["pending_click"]
+                    if pending.get("page") == int(preview_page) and preview_img is not None:
+                        preview_to_show = draw_preview_box(
+                            preview_img,
+                            pending["x_percent"],
+                            pending["y_percent"],
+                            box_width_px=260,
+                            box_height_px=38,
+                        )
+                    else:
+                        preview_to_show = preview_img
+                else:
+                    preview_to_show = preview_img
 
                 try:
                     from streamlit_image_coordinates import streamlit_image_coordinates
 
-                    if preview_img is not None:
-                        click = streamlit_image_coordinates(
-                            preview_img,
-                            key=f"pdf_click_coordinates_{preview_page}",
-                        )
+                    if preview_to_show is not None:
+                        if place_mode:
+                            click = streamlit_image_coordinates(
+                                preview_to_show,
+                                key=f"pdf_click_coordinates_{preview_page}",
+                            )
 
-                        if click is not None:
-                            clicked_x = float(click.get("x", 0))
-                            clicked_y = float(click.get("y", 0))
-                            img_w, img_h = preview_img.size
-                            st.session_state["pending_click"] = {
-                                "page": int(preview_page),
-                                "x_percent": round((clicked_x / img_w) * 100, 2),
-                                "y_percent": round((clicked_y / img_h) * 100, 2),
-                            }
-
+                            if click is not None and click.get("x") is not None and click.get("y") is not None:
+                                clicked_x = float(click.get("x", 0))
+                                clicked_y = float(click.get("y", 0))
+                                img_w, img_h = preview_to_show.size
+                                st.session_state["pending_click"] = {
+                                    "page": int(preview_page),
+                                    "x_percent": round((clicked_x / img_w) * 100, 2),
+                                    "y_percent": round((clicked_y / img_h) * 100, 2),
+                                }
+                                st.rerun()
+                        else:
+                            st.image(preview_to_show, caption=f"Page {preview_page} preview")
+                            st.caption("Turn on placement mode before clicking the PDF.")
                     else:
                         st.warning("Preview requires PyMuPDF and Pillow.")
 
                 except Exception:
-                    if preview_img is not None:
-                        st.image(preview_img, caption=f"Page {preview_page} preview")
+                    if preview_to_show is not None:
+                        st.image(preview_to_show, caption=f"Page {preview_page} preview")
                     st.warning(
                         "Clickable preview component is not installed. Use manual X/Y fields on the right instead."
                     )
@@ -300,18 +353,18 @@ with tab_editor:
                         )
 
             with col_right:
-                st.markdown("### Add Tag Popup")
+                st.markdown("### Add Text After Box Placement")
 
                 pending = st.session_state.get("pending_click")
                 if pending:
                     st.success(
-                        f"Selected location: Page {pending['page']} | X {pending['x_percent']}% | Y {pending['y_percent']}%"
+                        f"Box placed: Page {pending['page']} | X {pending['x_percent']}% | Y {pending['y_percent']}%"
                     )
                     default_page = pending["page"]
                     default_x = pending["x_percent"]
                     default_y = pending["y_percent"]
                 else:
-                    st.caption("No click yet. You may still manually enter the location.")
+                    st.caption("No box placed yet. Enable box placement mode and click the PDF, or manually enter X/Y.")
                     default_page = int(preview_page)
                     default_x = 8.0
                     default_y = 24.0
