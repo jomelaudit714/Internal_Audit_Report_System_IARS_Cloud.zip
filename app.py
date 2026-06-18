@@ -233,10 +233,11 @@ auditor_options = auditors_df["Auditor"].dropna().astype(str).tolist() if not au
 tab_extract, tab_editor = st.tabs(["Generate Extraction", "PDF Tagging Editor"])
 
 
+
 with tab_editor:
     st.subheader("PDF Tagging Editor")
     st.caption(
-        "Use this instead of handwriting. Click the PDF preview, type the tag in the popup form, then generate a tagged PDF."
+        "Draw a box directly on the PDF like a simple PDF editor. Then enter the tag text and save it."
     )
 
     tag_pdf = st.file_uploader(
@@ -261,245 +262,147 @@ with tab_editor:
                 st.session_state["tag_rows"] = pd.DataFrame(
                     columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
                 )
-            if "pending_click" not in st.session_state:
-                st.session_state["pending_click"] = None
 
             st.info(
-                "Workflow: choose a page → enable box placement mode → click the PDF to show a box → enter tag details → save tag → generate tagged PDF."
+                "If no tag is needed, go directly to Generate Extraction. If a tag is needed: draw a box on the PDF, enter the label below, save tag, then generate tagged PDF."
             )
 
-            col_left, col_right = st.columns([1.25, 1])
+            preview_page = st.number_input(
+                "Page to tag",
+                min_value=1,
+                max_value=page_count,
+                value=1,
+                step=1,
+                key="drawable_preview_page",
+            )
 
-            with col_left:
-                preview_page = st.number_input(
-                    "Page to tag",
-                    min_value=1,
-                    max_value=page_count,
-                    value=1,
-                    step=1,
-                    key="click_preview_page",
+            # Render larger page preview for tagging.
+            preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1, zoom=1.9)
+
+            st.markdown("### Draw Box on PDF")
+            st.caption(
+                "Use your mouse to draw a rectangle where the tag should appear. To change size/place, clear and draw again. This is smoother than click popups."
+            )
+
+            canvas_result = None
+            selected_rect = None
+
+            try:
+                from streamlit_drawable_canvas import st_canvas
+
+                if preview_img is not None:
+                    img_w, img_h = preview_img.size
+
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 255, 150, 0.25)",
+                        stroke_width=2,
+                        stroke_color="#000000",
+                        background_image=preview_img,
+                        update_streamlit=True,
+                        height=img_h,
+                        width=img_w,
+                        drawing_mode="rect",
+                        key=f"pdf_box_canvas_{preview_page}",
+                    )
+
+                    if canvas_result is not None and canvas_result.json_data is not None:
+                        objects = canvas_result.json_data.get("objects", [])
+                        rects = [obj for obj in objects if obj.get("type") == "rect"]
+                        if rects:
+                            selected_rect = rects[-1]
+                else:
+                    st.warning("Preview requires PyMuPDF and Pillow.")
+
+            except Exception as e:
+                st.warning(
+                    "Drawable box editor is not available. Please check that streamlit-drawable-canvas is installed."
+                )
+                if preview_img is not None:
+                    st.image(preview_img, caption=f"Page {preview_page} preview")
+                selected_rect = None
+
+            if selected_rect:
+                img_w, img_h = preview_img.size
+                left = float(selected_rect.get("left", 0))
+                top = float(selected_rect.get("top", 0))
+                width = float(selected_rect.get("width", 0)) * float(selected_rect.get("scaleX", 1))
+                height = float(selected_rect.get("height", 0)) * float(selected_rect.get("scaleY", 1))
+
+                x_percent = round((left / img_w) * 100, 2)
+                y_percent = round(((top + height) / img_h) * 100, 2)
+
+                # Convert preview pixels to PDF points approximately based on rendered page size.
+                pdf_box_width = max(60.0, (width / img_w) * float(page_w))
+                pdf_box_height = max(16.0, (height / img_h) * float(page_h))
+
+                st.success(
+                    f"Box ready: Page {preview_page} | X {x_percent}% | Y {y_percent}% | Width {round(pdf_box_width, 1)} | Height {round(pdf_box_height, 1)}"
                 )
 
-                preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1)
+                st.markdown("### Enter Text for the Box")
 
-                st.markdown("#### Click on the page")
-                st.caption("After clicking, a tag form will appear on the right.")
+                with st.form("drawable_tag_form", clear_on_submit=False):
+                    tag_type = st.selectbox(
+                        "Tag Type",
+                        ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
+                    )
 
-                # Placement is now intentional to avoid accidental popup/location changes.
-                place_mode = st.checkbox(
-                    "Enable box placement mode",
-                    value=False,
-                    help="Turn this on first, then click the PDF to place a temporary box.",
-                )
-
-                if st.session_state.get("pending_click"):
-                    pending = st.session_state["pending_click"]
-                    if pending.get("page") == int(preview_page) and preview_img is not None:
-                        preview_to_show = draw_preview_box(
-                            preview_img,
-                            pending["x_percent"],
-                            pending["y_percent"],
-                            box_width_px=int(st.session_state.get("preview_box_width_px", 260)),
-                            box_height_px=int(st.session_state.get("preview_box_height_px", 38)),
-                        )
+                    if tag_type == "Auditor":
+                        tag_value = st.selectbox("Value", [""] + auditor_options)
+                    elif tag_type == "Reaction":
+                        tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
+                    elif tag_type == "Frequency Rate":
+                        tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
                     else:
-                        preview_to_show = preview_img
-                else:
-                    preview_to_show = preview_img
+                        tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
 
-                try:
-                    from streamlit_image_coordinates import streamlit_image_coordinates
+                    font_size = st.number_input(
+                        "Font size",
+                        min_value=6.0,
+                        max_value=24.0,
+                        value=11.0,
+                        step=1.0,
+                    )
 
-                    if preview_to_show is not None:
-                        if place_mode:
-                            click = streamlit_image_coordinates(
-                                preview_to_show,
-                                key=f"pdf_click_coordinates_{preview_page}",
-                            )
+                    style = st.selectbox(
+                        "Display style",
+                        ["Box", "Highlight Box", "Plain Text"],
+                        index=0,
+                    )
 
-                            if click is not None and click.get("x") is not None and click.get("y") is not None:
-                                clicked_x = float(click.get("x", 0))
-                                clicked_y = float(click.get("y", 0))
-                                img_w, img_h = preview_to_show.size
-                                st.session_state["pending_click"] = {
-                                    "page": int(preview_page),
-                                    "x_percent": round((clicked_x / img_w) * 100, 2),
-                                    "y_percent": round((clicked_y / img_h) * 100, 2),
-                                }
-                                st.rerun()
-                        else:
-                            st.image(preview_to_show, caption=f"Page {preview_page} preview")
-                            st.caption("Turn on placement mode before clicking the PDF.")
+                    label_text = normalize_tag_text(tag_type, tag_value)
+                    st.text_input("Text to insert", value=label_text, disabled=True)
+
+                    submitted = st.form_submit_button("Save This Box Tag", type="primary")
+
+                if submitted:
+                    if not label_text:
+                        st.warning("Please enter a value before saving the tag.")
                     else:
-                        st.warning("Preview requires PyMuPDF and Pillow.")
-
-                except Exception:
-                    if preview_to_show is not None:
-                        st.image(preview_to_show, caption=f"Page {preview_page} preview")
-                    st.warning(
-                        "Clickable preview component is not installed. Use manual X/Y fields on the right instead."
-                    )
-
-                # Show current tags for selected page.
-                current_tags = st.session_state["tag_rows"]
-                if not current_tags.empty:
-                    page_tags = current_tags[current_tags["Page"].astype(str) == str(int(preview_page))]
-                    if not page_tags.empty:
-                        st.markdown("#### Tags on this page")
-                        st.dataframe(
-                            page_tags[["Label Text", "Style", "X %", "Y %", "Box Width", "Box Height"]],
-                            use_container_width=True,
-                            hide_index=True,
+                        new_row = pd.DataFrame([{
+                            "Page": int(preview_page),
+                            "Tag Type": tag_type,
+                            "Value": tag_value,
+                            "Label Text": label_text,
+                            "X %": float(x_percent),
+                            "Y %": float(y_percent),
+                            "Font Size": float(font_size),
+                            "Style": style,
+                            "Box Width": float(pdf_box_width),
+                            "Box Height": float(pdf_box_height),
+                        }])
+                        st.session_state["tag_rows"] = pd.concat(
+                            [st.session_state["tag_rows"], new_row],
+                            ignore_index=True,
                         )
+                        st.success(f"Saved: {label_text}")
+                        st.caption("Draw another box if you need another tag.")
 
-            with col_right:
-                pending = st.session_state.get("pending_click")
-
-                if not pending:
-                    st.markdown("### Place Box First")
-                    st.info(
-                        "No tag box is active. Turn on **Enable box placement mode** on the left, then click the PDF. The input form will appear only after a box is placed."
-                    )
-                    st.caption("This prevents accidental popups and keeps the PDF preview clear.")
-                else:
-                    st.markdown("### Box Placed")
-                    st.success(
-                        f"Page {pending['page']} | X {pending['x_percent']}% | Y {pending['y_percent']}%"
-                    )
-
-                    st.markdown("#### Adjust Box Size")
-                    size_col1, size_col2 = st.columns(2)
-                    with size_col1:
-                        st.session_state["preview_box_width_px"] = st.slider(
-                            "Preview box width",
-                            min_value=80,
-                            max_value=520,
-                            value=int(st.session_state.get("preview_box_width_px", 260)),
-                            step=10,
-                        )
-                    with size_col2:
-                        st.session_state["preview_box_height_px"] = st.slider(
-                            "Preview box height",
-                            min_value=22,
-                            max_value=90,
-                            value=int(st.session_state.get("preview_box_height_px", 38)),
-                            step=2,
-                        )
-
-                    st.caption("Resize the box here before saving. The box preview will update on the PDF.")
-
-                    default_page = pending["page"]
-                    default_x = pending["x_percent"]
-                    default_y = pending["y_percent"]
-
-                    with st.form("click_tag_form", clear_on_submit=False):
-                        form_page = st.number_input(
-                            "Page",
-                            min_value=1,
-                            max_value=page_count,
-                            value=int(default_page),
-                            step=1,
-                        )
-
-                        tag_type = st.selectbox(
-                            "Tag Type",
-                            ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
-                        )
-
-                        if tag_type == "Auditor":
-                            tag_value = st.selectbox("Value", [""] + auditor_options)
-                        elif tag_type == "Reaction":
-                            tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
-                        elif tag_type == "Frequency Rate":
-                            tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
-                        else:
-                            tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
-
-                        cxy1, cxy2 = st.columns(2)
-                        with cxy1:
-                            form_x = st.number_input(
-                                "X position (%)",
-                                min_value=0.0,
-                                max_value=100.0,
-                                value=float(default_x),
-                                step=0.5,
-                            )
-                        with cxy2:
-                            form_y = st.number_input(
-                                "Y position (%)",
-                                min_value=0.0,
-                                max_value=100.0,
-                                value=float(default_y),
-                                step=0.5,
-                            )
-
-                        font_size = st.number_input(
-                            "Font size",
-                            min_value=6.0,
-                            max_value=24.0,
-                            value=11.0,
-                            step=1.0,
-                        )
-
-                        style = st.selectbox(
-                            "Display style",
-                            ["Box", "Highlight Box", "Plain Text"],
-                            index=0,
-                        )
-
-                        # Convert preview pixel size to PDF point-like size.
-                        # This is approximate but stable and editable in the tag list after saving.
-                        box_width = st.number_input(
-                            "Final PDF box width",
-                            min_value=60.0,
-                            max_value=500.0,
-                            value=float(st.session_state.get("preview_box_width_px", 260)) * 0.75,
-                            step=10.0,
-                        )
-                        box_height = st.number_input(
-                            "Final PDF box height",
-                            min_value=16.0,
-                            max_value=80.0,
-                            value=max(20.0, float(st.session_state.get("preview_box_height_px", 38)) * 0.65),
-                            step=2.0,
-                        )
-
-                        label_text = normalize_tag_text(tag_type, tag_value)
-                        st.text_input("Text to insert", value=label_text, disabled=True)
-
-                        submitted = st.form_submit_button("Save Tag Here", type="primary")
-
-                    if submitted:
-                        if not label_text:
-                            st.warning("Please enter a value before saving the tag.")
-                        else:
-                            new_row = pd.DataFrame([{
-                                "Page": int(form_page),
-                                "Tag Type": tag_type,
-                                "Value": tag_value,
-                                "Label Text": label_text,
-                                "X %": float(form_x),
-                                "Y %": float(form_y),
-                                "Font Size": float(font_size),
-                                "Style": style,
-                                "Box Width": float(box_width),
-                                "Box Height": float(box_height),
-                            }])
-                            st.session_state["tag_rows"] = pd.concat(
-                                [st.session_state["tag_rows"], new_row],
-                                ignore_index=True,
-                            )
-                            st.session_state["pending_click"] = None
-                            st.success(f"Saved: {label_text}")
-                            st.rerun()
-
-                    st.divider()
-                    if st.button("Cancel Current Box"):
-                        st.session_state["pending_click"] = None
-                        st.rerun()
+            else:
+                st.info("Draw a box on the PDF first. The tag input form will appear after a box is detected.")
 
             st.divider()
-            st.markdown("### Tag List")
+            st.markdown("### Saved Tags")
             tag_rows = st.data_editor(
                 st.session_state["tag_rows"],
                 use_container_width=True,
@@ -518,7 +421,7 @@ with tab_editor:
                         options=["Box", "Highlight Box", "Plain Text"],
                     ),
                     "Box Width": st.column_config.NumberColumn("Box Width", min_value=60.0, max_value=500.0, step=10.0),
-                    "Box Height": st.column_config.NumberColumn("Box Height", min_value=16.0, max_value=80.0, step=2.0),
+                    "Box Height": st.column_config.NumberColumn("Box Height", min_value=16.0, max_value=120.0, step=2.0),
                 },
             )
             st.session_state["tag_rows"] = tag_rows
@@ -537,12 +440,12 @@ with tab_editor:
                         )
                     except Exception as e:
                         st.error(f"Unable to generate tagged PDF: {e}")
+
             with cclear:
-                if st.button("Clear All Tags"):
+                if st.button("Clear All Saved Tags"):
                     st.session_state["tag_rows"] = pd.DataFrame(
                         columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
                     )
-                    st.session_state["pending_click"] = None
                     st.rerun()
 
     else:

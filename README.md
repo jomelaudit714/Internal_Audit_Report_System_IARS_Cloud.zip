@@ -157,3 +157,16 @@ This version improves the PDF Tagging Editor:
 - The box appears first on the PDF preview.
 - Box size can be adjusted before saving the tag.
 - A cancel button removes the current box before saving.
+
+
+## Drawable Box Tag Editor
+
+This version replaces click-popup placement with a box drawing editor:
+- PDF is shown larger.
+- Draw a rectangle directly on the PDF.
+- Resize/change the box by drawing it the way you want before saving.
+- The input form appears only after a box is drawn.
+- Saved tags are still editable in the Saved Tags table.
+
+Dependency added:
+- streamlit-drawable-canvas
