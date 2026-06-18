@@ -170,3 +170,16 @@ This version replaces click-popup placement with a box drawing editor:
 
 Dependency added:
 - streamlit-drawable-canvas
+
+
+## Custom Smooth PDF Box Editor
+
+This version adds a custom Streamlit component for smoother tagging:
+- Click `+ Add Box` inside the PDF editor.
+- Drag the box anywhere on the PDF.
+- Resize using the blue corner handle.
+- Edit the text directly inside the box.
+- Click `Save Boxes From This Page`.
+- Generate tagged PDF.
+
+This avoids the blocking form and reduces Streamlit rerun lag during dragging/resizing.
