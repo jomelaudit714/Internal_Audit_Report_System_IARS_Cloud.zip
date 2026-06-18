@@ -65,7 +65,13 @@ def render_pdf_page(pdf_bytes: bytes, page_no: int, zoom: float = 1.4):
 
 
 def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
-    """Insert typed tags into the PDF at normalized positions."""
+    """Insert typed tags into the PDF at normalized positions.
+
+    Supports:
+    - Plain Text
+    - Box
+    - Highlight Box
+    """
     import fitz
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -80,6 +86,9 @@ def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
             x_percent = float(row.get("X %", 8))
             y_percent = float(row.get("Y %", 12))
             font_size = float(row.get("Font Size", 11))
+            box_width = float(row.get("Box Width", 210))
+            box_height = float(row.get("Box Height", 22))
+            style = str(row.get("Style", "Box") or "Box")
         except Exception:
             continue
 
@@ -90,14 +99,40 @@ def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
         x = max(0, min(100, x_percent)) / 100 * page.rect.width
         y = max(0, min(100, y_percent)) / 100 * page.rect.height
 
-        # Black text is the safest for OCR and normal PDF text extraction.
-        page.insert_text(
-            fitz.Point(x, y),
-            label_text,
-            fontsize=font_size,
-            fontname="helv",
-            color=(0, 0, 0),
-        )
+        if style in ["Box", "Highlight Box"]:
+            rect = fitz.Rect(x, y - font_size - 5, x + box_width, y + box_height - font_size - 5)
+
+            if style == "Highlight Box":
+                page.draw_rect(
+                    rect,
+                    color=(0, 0, 0),
+                    fill=(1, 1, 0.65),
+                    width=0.8,
+                )
+            else:
+                page.draw_rect(
+                    rect,
+                    color=(0, 0, 0),
+                    fill=(1, 1, 1),
+                    width=0.8,
+                )
+
+            text_point = fitz.Point(rect.x0 + 5, rect.y0 + font_size + 2)
+            page.insert_text(
+                text_point,
+                label_text,
+                fontsize=font_size,
+                fontname="helv",
+                color=(0, 0, 0),
+            )
+        else:
+            page.insert_text(
+                fitz.Point(x, y),
+                label_text,
+                fontsize=font_size,
+                fontname="helv",
+                color=(0, 0, 0),
+            )
 
     output = BytesIO()
     doc.save(output)
@@ -125,9 +160,9 @@ def normalize_tag_text(tag_type: str, value: str):
 def build_default_tag_rows(page_count: int = 1):
     return pd.DataFrame(
         [
-            {"Page": 1, "Tag Type": "Task ID", "Value": "001", "Label Text": "Task ID: 001", "X %": 8.0, "Y %": 24.0, "Font Size": 11},
-            {"Page": 1, "Tag Type": "Auditor", "Value": "Patricia Anne S. Del Rosario", "Label Text": "Auditor: Patricia Anne S. Del Rosario", "X %": 8.0, "Y %": 27.0, "Font Size": 11},
-            {"Page": 1, "Tag Type": "Auditee", "Value": "Emerito Bondoc", "Label Text": "Auditee: Emerito Bondoc", "X %": 8.0, "Y %": 30.0, "Font Size": 11},
+            {"Page": 1, "Tag Type": "Task ID", "Value": "001", "Label Text": "Task ID: 001", "X %": 8.0, "Y %": 24.0, "Font Size": 11, "Style": "Box", "Box Width": 160, "Box Height": 24},
+            {"Page": 1, "Tag Type": "Auditor", "Value": "Patricia Anne S. Del Rosario", "Label Text": "Auditor: Patricia Anne S. Del Rosario", "X %": 8.0, "Y %": 27.0, "Font Size": 11, "Style": "Box", "Box Width": 280, "Box Height": 24},
+            {"Page": 1, "Tag Type": "Auditee", "Value": "Emerito Bondoc", "Label Text": "Auditee: Emerito Bondoc", "X %": 8.0, "Y %": 30.0, "Font Size": 11, "Style": "Box", "Box Width": 230, "Box Height": 24},
         ]
     )
 
@@ -194,7 +229,7 @@ with tab_editor:
         if page_count:
             if "tag_rows" not in st.session_state:
                 st.session_state["tag_rows"] = pd.DataFrame(
-                    columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size"]
+                    columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
                 )
             if "pending_click" not in st.session_state:
                 st.session_state["pending_click"] = None
@@ -259,7 +294,7 @@ with tab_editor:
                     if not page_tags.empty:
                         st.markdown("#### Tags on this page")
                         st.dataframe(
-                            page_tags[["Label Text", "X %", "Y %"]],
+                            page_tags[["Label Text", "Style", "X %", "Y %", "Box Width", "Box Height"]],
                             use_container_width=True,
                             hide_index=True,
                         )
@@ -330,6 +365,30 @@ with tab_editor:
                         step=1.0,
                     )
 
+                    style = st.selectbox(
+                        "Display style",
+                        ["Box", "Highlight Box", "Plain Text"],
+                        index=0,
+                    )
+
+                    bw_col, bh_col = st.columns(2)
+                    with bw_col:
+                        box_width = st.number_input(
+                            "Box width",
+                            min_value=60.0,
+                            max_value=500.0,
+                            value=220.0,
+                            step=10.0,
+                        )
+                    with bh_col:
+                        box_height = st.number_input(
+                            "Box height",
+                            min_value=16.0,
+                            max_value=80.0,
+                            value=24.0,
+                            step=2.0,
+                        )
+
                     label_text = normalize_tag_text(tag_type, tag_value)
                     st.text_input("Text to insert", value=label_text, disabled=True)
 
@@ -347,6 +406,9 @@ with tab_editor:
                             "X %": float(form_x),
                             "Y %": float(form_y),
                             "Font Size": float(font_size),
+                            "Style": style,
+                            "Box Width": float(box_width),
+                            "Box Height": float(box_height),
                         }])
                         st.session_state["tag_rows"] = pd.concat(
                             [st.session_state["tag_rows"], new_row],
@@ -374,6 +436,9 @@ with tab_editor:
                                 "X %": float(pending["x_percent"]),
                                 "Y %": float(pending["y_percent"]),
                                 "Font Size": 11.0,
+                                "Style": "Box",
+                                "Box Width": 160.0,
+                                "Box Height": 24.0,
                             }])
                             st.session_state["tag_rows"] = pd.concat(
                                 [st.session_state["tag_rows"], new_row],
@@ -397,6 +462,9 @@ with tab_editor:
                                 "X %": float(pending["x_percent"]),
                                 "Y %": float(pending["y_percent"]),
                                 "Font Size": 11.0,
+                                "Style": "Box",
+                                "Box Width": 280.0,
+                                "Box Height": 24.0,
                             }])
                             st.session_state["tag_rows"] = pd.concat(
                                 [st.session_state["tag_rows"], new_row],
@@ -420,6 +488,9 @@ with tab_editor:
                                 "X %": float(pending["x_percent"]),
                                 "Y %": float(pending["y_percent"]),
                                 "Font Size": 11.0,
+                                "Style": "Box",
+                                "Box Width": 230.0,
+                                "Box Height": 24.0,
                             }])
                             st.session_state["tag_rows"] = pd.concat(
                                 [st.session_state["tag_rows"], new_row],
@@ -445,6 +516,12 @@ with tab_editor:
                     "X %": st.column_config.NumberColumn("X %", min_value=0.0, max_value=100.0, step=0.5),
                     "Y %": st.column_config.NumberColumn("Y %", min_value=0.0, max_value=100.0, step=0.5),
                     "Font Size": st.column_config.NumberColumn("Font Size", min_value=6.0, max_value=24.0, step=1.0),
+                    "Style": st.column_config.SelectboxColumn(
+                        "Style",
+                        options=["Box", "Highlight Box", "Plain Text"],
+                    ),
+                    "Box Width": st.column_config.NumberColumn("Box Width", min_value=60.0, max_value=500.0, step=10.0),
+                    "Box Height": st.column_config.NumberColumn("Box Height", min_value=16.0, max_value=80.0, step=2.0),
                 },
             )
             st.session_state["tag_rows"] = tag_rows
@@ -466,7 +543,7 @@ with tab_editor:
             with cclear:
                 if st.button("Clear All Tags"):
                     st.session_state["tag_rows"] = pd.DataFrame(
-                        columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size"]
+                        columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
                     )
                     st.session_state["pending_click"] = None
                     st.rerun()

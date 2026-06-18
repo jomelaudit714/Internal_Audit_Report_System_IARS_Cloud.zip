@@ -117,3 +117,19 @@ This version improves the tagging workflow:
 8. Upload the tagged PDF in `Generate Extraction`.
 
 If the clickable preview component is unavailable, the system still provides manual X/Y fields.
+
+
+## Box Shape Tags
+
+The PDF Tagging Editor now supports visible tag boxes:
+- `Box` default style
+- `Highlight Box`
+- `Plain Text`
+
+When a tag is inserted, the generated PDF can show:
+- a visible rectangle around the label,
+- adjustable box width,
+- adjustable box height,
+- adjustable font size.
+
+This makes the tag location easier to review in the PDF.
