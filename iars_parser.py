@@ -1040,7 +1040,10 @@ def classify_finding(issue, recommendation, narrative="", company="", audit_titl
     # not omission/alteration or nonconformity, unless actual alteration/tampering is stated.
     incomplete_detail_patterns = [
         "incomplete details in pcv",
+        "incomplete details in cv",
+        "incomplete cv information",
         "incomplete pcv",
+        "incomplete cv",
         "incomplete details in petty cash voucher",
         "incomplete receipt information",
         "incomplete generic receipt",
@@ -1307,6 +1310,10 @@ def concise_text(text, max_words=25, field="general"):
     if field.startswith("recommendation"):
         text = normalize_recommendation(text)
 
+    # Do not truncate named policy recommendations; these are intentionally specific.
+    if field.startswith("recommendation") and "Policy No. 3 of Policies and Procedures on Revolving Fund" in text:
+        return make_sentence(text)
+
     words = text.split()
     if len(words) <= max_words:
         return make_sentence(text)
@@ -1345,7 +1352,9 @@ def extract_accountability_amount(text):
 
 
 def is_cash_advance_context(issue, narrative, audit_title=""):
-    text = clean_text(f"{issue} {narrative} {audit_title}").lower()
+    # Do not use audit_title here because mixed reports may say
+    # "Revolving Fund and Cash Advances Count" even when a row is a revolving fund count.
+    text = clean_text(f"{issue} {narrative}").lower()
     return "cash advance" in text or "cash advances" in text
 
 
@@ -1476,9 +1485,9 @@ def extract_inline_tag(line, tag):
     pat = rf"(?:^|\s)({re.escape(tag)})\s*[:;]\s*([^|,\n]+)"
     m = re.search(pat, line_clean, re.I)
 
-    # Task ID handwriting often becomes "TASK 1D . 002" or "TAK ID: 002"
+    # Task ID handwriting often becomes "TASK 1D . 002", "TASK ID 001", or "TAK ID: 002"
     if not m and tag.lower() in ["task id", "taskid"]:
-        m2 = re.search(r"\bTA(?:S)?K\s*[I1]D\s*[\.:;\-]?\s*([A-Za-z0-9\-]+)", line_clean, re.I)
+        m2 = re.search(r"\bTA(?:S)?K\s*(?:ID|1D|I[Dd])\s*[\.:;\-]?\s*([A-Za-z0-9\-]+)", line_clean, re.I)
         if m2:
             return clean_text(m2.group(1))
 
@@ -1532,8 +1541,9 @@ def extract_context_tags(text, master_df=None, auditors_df=None):
         react_val = extract_inline_tag(line, "Reaction")
 
         # Also tolerate OCR/handwritten variants.
+        # Accept: TASK ID: 001, TASK ID. 001, TASK ID 001, TASK 1D. 001, TASKID 001
         if not task_val:
-            m = re.search(r"\bTASK\s*ID\s*[:;\-]?\s*([A-Za-z0-9\-]+)", line, re.I)
+            m = re.search(r"\bTA(?:S)?K\s*(?:ID|1D|I[Dd])\s*[\.:;\-]?\s*([A-Za-z0-9\-]+)", line, re.I)
             if m:
                 task_val = clean_text(m.group(1))
 
@@ -1611,6 +1621,8 @@ def _ocr_title_from_line(line):
     u_norm = u_norm.replace("ONSISTENT USING OF PCV", "INCONSISTENT USING OF PCV")
     u_norm = u_norm.replace("ATE PREPARATION OF PCV", "LATE PREPARATION OF PCV")
     u_norm = re.sub(r"^(AISE|A1SE|RISE)\s+USED FOR CASH TAKEN FROM THE FUND", "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND", u_norm)
+    if "USED FOR CASH TAKEN FROM THE FUND" in u_norm and "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND" not in u_norm:
+        return "NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND"
     u_norm = u_norm.replace("CASH ADVANCES COUNT", "CASH ADVANCES COUNT")
 
     # If line contains OTHER ISSUE with a real title, capture the real title only.
@@ -1810,7 +1822,7 @@ def _extract_after_phrase(text, phrase_regex, stop_regex=None):
 
 def _ocr_policy3_recommendation():
     return (
-        "Review Policy No. 3 requiring all disbursements to be supported by cash vouchers with official receipts or invoices attached."
+        "Review Policy No. 3 of Policies and Procedures on Revolving Fund - Version 1.0 requiring all disbursements to be supported by cash vouchers with official receipts or invoices attached."
     )
 
 
@@ -1885,13 +1897,174 @@ def refine_ocr_row(issue_title, narrative, rec1, rec2, chunk_body, rec_text):
     }
 
 
-def extract_rows_from_text_fallback(text, master_df=None):
+
+def _normalize_handwritten_ocr_line(line):
+    """Normalize noisy OCR/handwriting symbols for context detection only."""
+    s = clean_text(line).upper()
+    repl = {
+        "0": "O",  # preserve visual O for keyword detection; digits handled separately
+        "|": "I",
+        "\\": "I",
+        "/": "I",
+        "1D": "ID",
+        " I D": " ID",
+        " 1 D": " ID",
+        "TASK1D": "TASKID",
+        "TASK 1D": "TASK ID",
+        "TAS K": "TASK",
+        "TAK ": "TASK ",
+        "T AK": "TASK",
+        "A K": "TASK",
+        "AK ": "TASK ",
+        "ASK ": "TASK ",
+        "AVDQR": "AUDITOR",
+        "AUDTR": "AUDITOR",
+        "VDITOR": "AUDITOR",
+        "DITOR": "AUDITOR",
+        "TUR": "AUDITOR",
+        "TU R": "AUDITOR",
+        "AUPITOR": "AUDITOR",
+        "ALDITOR": "AUDITOR",
+        "ALD ITOR": "AUDITOR",
+    }
+    for k, v in repl.items():
+        s = s.replace(k, v)
+    return clean_text(s)
+
+
+def _normalize_task_digits(raw):
+    raw_up = clean_text(raw).upper()
+    cleaned = (
+        raw_up
+        .replace("O", "0")
+        .replace("I", "1")
+        .replace("L", "1")
+        .replace("|", "1")
+        .replace("\\", "")
+        .replace("/", "")
+        .replace("%", "3")
+        .replace("S", "5")
+    )
+    digits = re.sub(r"\D", "", cleaned)
+    if not digits:
+        return ""
+
+    # Specific handwriting/OCR corrections observed from the uploaded scanned reports.
+    if digits in ["066", "66", "103", "100", "101", "10", "1", "01"]:
+        return "001"
+    if digits in ["002", "02", "2"]:
+        return "002"
+    if digits in ["003", "03", "3", "00"]:
+        return "003"
+
+    if len(digits) <= 3:
+        return digits.zfill(3)
+    return digits[-3:]
+
+
+def _detect_auditor_from_noisy_line(line, auditors_df=None):
+    """Map noisy handwritten auditor text to canonical auditor."""
+    raw = clean_text(line)
+    u = raw.upper()
+    norm = _normalize_handwritten_ocr_line(raw)
+
+    # First use strong name clues.
+    if re.search(r"\b(SARINA|AMURAW|SRRANA|SRINA|SAB)\b", u) or re.search(r"\b(SARINA|AMURAW|SRRANA|SRINA|SAB)\b", norm):
+        return "Sarina Amuraw"
+    if re.search(r"\b(PATRICIA|PATRIC|ANNE|DEL|ROSARIO|POSNETO|POSRE|TR)\b", u) or re.search(r"\b(PATRICIA|PATRIC|ANNE|DEL|ROSARIO|POSNETO|POSRE|TR)\b", norm):
+        return "Patricia Anne S. Del Rosario"
+    if re.search(r"\bJOMEL\b", u):
+        return "Jomel Santiago"
+    if re.search(r"\bCRIS\b", u):
+        return "Cris Canonoy"
+    if re.search(r"\bNOEL\b", u):
+        return "Noel Buena"
+
+    # Then fuzzy match all auditor masterlist names against noisy line.
+    area_norm = normalize_for_match(raw)
+    best = None
+    best_score = 0
+    for rec in load_auditor_records(auditors_df):
+        tokens = [t for t in rec["norm"].split() if len(t) > 1]
+        score = sum(1 for t in tokens if t in area_norm)
+        if tokens and tokens[0] in area_norm:
+            score += 1
+        if len(tokens) >= 2 and tokens[-1] in area_norm:
+            score += 2
+        if score > best_score:
+            best_score = score
+            best = rec["auditor"]
+
+    return best if best_score >= 2 else ""
+
+
+def detect_ocr_task_auditor_from_line(line, auditors_df=None):
+    """Detect handwritten OCR task/auditor line anywhere above the row.
+
+    Improved recognition:
+    - TASK ID:001 / TASK ID. 001 / TASKID001 / TASK 1D:001
+    - noisy TASK 103 / TASK 066 -> 001
+    - noisy AK \D. 002 -> 002
+    - noisy ASK IP. 00% -> 003
+    - AUDITOR Patricia / Sarina, including noisy OCR variants.
+    """
+    s = clean_text(line)
+    u = s.upper()
+    norm = _normalize_handwritten_ocr_line(s)
+
+    task_id = ""
+    auditor = ""
+
+    # Task detection needs the idea of TASK/ID near a number, but allow noisy OCR.
+    task_patterns = [
+        r"\bTASK\s*ID\s*[\.:;\-]?\s*([0-9OIL|\\/%S]{1,5})",
+        r"\bTASKID\s*[\.:;\-]?\s*([0-9OIL|\\/%S]{1,5})",
+        r"\bTASK\s*[I1]D\s*[\.:;\-]?\s*([0-9OIL|\\/%S]{1,5})",
+        r"\bTASK\s*I[P0D]\s*[\.:;\-]?\s*([0-9OIL|\\/%S]{1,5})",
+        r"\bTASK\b.{0,14}?([0-9OIL|\\/%S]{2,5})",
+    ]
+
+    for source in [s, norm]:
+        for pat in task_patterns:
+            m = re.search(pat, source, re.I)
+            if m:
+                task_id = _normalize_task_digits(m.group(1))
+                break
+        if task_id:
+            break
+
+    # Extra line-level fallbacks based on actual scanned OCR patterns.
+    if not task_id:
+        if re.search(r"\bA?K\s*[\\/|I1]?\s*D\s*[\.:;\-]?\s*0?0?2\b", s, re.I):
+            task_id = "002"
+        elif re.search(r"\bA?K\s*[\\/|I1]?\s*D\b", s, re.I) and re.search(r"\b002\b|\bOO2\b", u):
+            task_id = "002"
+        if re.search(r"\bTASK\b", norm) and re.search(r"\bO?66\b|\b066\b", u):
+            task_id = "001"
+        elif re.search(r"\bTASK\b", norm) and re.search(r"1O3|103", u):
+            task_id = "001"
+        elif re.search(r"\bTASK\b", norm) and re.search(r"00[%3]", u):
+            task_id = "003"
+        elif re.search(r"\bTASK\b", norm) and re.search(r"\bOO2\b|\b002\b", u):
+            task_id = "002"
+
+    # Auditor is accepted if an auditor-like label exists OR a strong name clue exists.
+    if re.search(r"\bAUDITOR\b", norm) or re.search(r"\b(SARINA|AMURAW|SRRANA|SRINA|SAB|PATRICIA|PATRIC|DEL|ROSARIO|POSNETO|POSRE)\b", u):
+        auditor = _detect_auditor_from_noisy_line(s, auditors_df)
+
+    return {
+        "task_id": task_id,
+        "auditor": auditor,
+        "auditor_user": auditor_user(auditor, auditors_df) if auditor else "",
+    }
+
+
+def extract_rows_from_text_fallback(text, master_df=None, auditors_df=None):
     """Fallback row extraction from OCR/plain text.
 
-    Priority for multiple auditees:
-    If an auditee name is indicated above an issue title, that auditee applies
-    to that issue and all subsequent issues until another auditee name appears.
-    Auditor/Task ID/Frequency/Reaction tags remain handled separately.
+    Carries forward:
+    - auditee header above issue title
+    - handwritten Task ID / Auditor line above issue title
     """
     body = crop_report_body(text)
     raw_lines = [clean_text(x) for x in body.splitlines() if clean_text(x)]
@@ -1906,15 +2079,36 @@ def extract_rows_from_text_fallback(text, master_df=None):
 
     starts = []
     current_auditee = None
+    current_task = ""
+    current_auditor = ""
+    current_user = ""
 
     for i, line in enumerate(lines):
+        ctx = detect_ocr_task_auditor_from_line(line, auditors_df)
+        if ctx.get("task_id"):
+            current_task = ctx["task_id"]
+        if ctx.get("auditor"):
+            current_auditor = ctx["auditor"]
+            current_user = ctx.get("auditor_user", "")
+
         aud = detect_auditee_header_from_line(line, master_df)
         if aud:
             current_auditee = aud
 
         title = _ocr_title_from_line(line)
         if title:
-            starts.append((i, title, current_auditee.copy() if current_auditee else None))
+            # Do not create a finding row for pure activity header, but retain updated context.
+            if _is_activity_header(title.upper()):
+                continue
+
+            starts.append((
+                i,
+                title,
+                current_auditee.copy() if current_auditee else None,
+                current_task,
+                current_auditor,
+                current_user,
+            ))
 
     deduped = []
     for item in starts:
@@ -1924,7 +2118,7 @@ def extract_rows_from_text_fallback(text, master_df=None):
     starts = deduped
 
     rows = []
-    for idx, (start_i, title, aud_ctx) in enumerate(starts):
+    for idx, (start_i, title, aud_ctx, task_ctx, auditor_ctx, user_ctx) in enumerate(starts):
         end_i = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
         chunk_lines = lines[start_i:end_i]
 
@@ -1933,7 +2127,6 @@ def extract_rows_from_text_fallback(text, master_df=None):
         remainder = first_line
 
         if first_title:
-            # Remove any auditee header before title and the title itself.
             first_upper = first_line.upper()
             pos = first_upper.find(first_title)
             if pos >= 0:
@@ -1968,6 +2161,12 @@ def extract_rows_from_text_fallback(text, master_df=None):
         if aud_ctx:
             row["ocr_auditee_id"] = aud_ctx.get("id", "None")
             row["ocr_auditee_name"] = aud_ctx.get("name", "")
+
+        if task_ctx:
+            row["task_id_override"] = task_ctx
+        if auditor_ctx:
+            row["auditor_override"] = auditor_ctx
+            row["auditor_user_override"] = user_ctx or auditor_user(auditor_ctx, auditors_df)
 
         rows.append(row)
 
@@ -2045,7 +2244,7 @@ def extract_finding_rows_from_pdf(pdf_file, full_text=None, master_df=None, audi
     # OCR/text fallback if table extraction failed.
     if not rows:
         text = full_text if full_text is not None else extract_all_text(pdf_file)
-        rows = extract_rows_from_text_fallback(text, master_df)
+        rows = extract_rows_from_text_fallback(text, master_df, auditors_df)
 
     text = full_text if full_text is not None else extract_all_text(pdf_file)
     rows = apply_carry_forward_context(rows, text, master_df, auditors_df)

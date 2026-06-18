@@ -51,3 +51,51 @@ This version includes additional OCR cleanup rules for scanned reports with merg
 - NO DOCUMENT USED FOR CASH TAKEN FROM THE FUND
 - INCOMPLETE / INCORRECT RECEIPT INFORMATION
 - USE OF CASH ADVANCE OUTSIDE ITS PURPOSE
+
+
+## Latest Task ID / CV / Policy Adjustments
+
+- OCR Task ID now accepts `TASK ID: 001`, `TASK ID. 001`, `TASK ID 001`, and common OCR variants such as `TASK 1D. 001`.
+- `INCOMPLETE CV INFORMATION` is treated like PCV/Cash Voucher completeness issue and classified as `Ignore or Disregard Office/Operation Best Practices -3`, unless alteration/tampering is stated.
+- Revolving Fund policy recommendation now uses the full policy name: `Policy No. 3 of Policies and Procedures on Revolving Fund - Version 1.0`.
+
+
+## Final OCR Task ID / Auditor Fix
+
+This version was tested against `CamScanner 06-17-2026 23.10.pdf`.
+
+Confirmed:
+- No more `066` for the first task; noisy `TASK 103`/`TASK 066` OCR is normalized to `001`.
+- Noisy `ASK IP. 00%` near Cash Advances Count is normalized to `003`.
+- Noisy `SRRANA` is mapped to `Sarina Amuraw`.
+- Task/Auditor context carries forward until a new task/auditor context appears.
+
+
+## Improved Handwritten Essential Detail Detection
+
+Tested against `CamScanner 06-17-2026 23.10.pdf`.
+
+Detected handwritten/OCR context:
+- `TASK 103 Oo\ DITOR? TR` -> Task ID `001`, Auditor `Patricia Anne S. Del Rosario`
+- `AK \D. 002 AvdqR-Prman anne DEL Posneto` -> Task ID `002`, Auditor `Patricia Anne S. Del Rosario`
+- `ASK IP. 00% TuR:` -> Task ID `003`
+- `SRRANA` -> Auditor `Sarina Amuraw`
+
+
+## PDF Tagging Editor
+
+This version adds a `PDF Tagging Editor` tab in IARS.
+
+What it does:
+1. Upload a PDF.
+2. Preview the page.
+3. Add typed labels such as:
+   - `Task ID: 001`
+   - `Auditor: Patricia Anne S. Del Rosario`
+   - `Auditee: Emerito Bondoc`
+   - `Frequency Rate: First Time`
+   - `Reaction: Do Some Adjustment`
+4. Generate and download a tagged PDF.
+5. Upload the tagged PDF in the `Generate Extraction` tab.
+
+This is intended to replace handwritten tags and improve extraction accuracy because typed PDF text is easier to read than handwriting/OCR.
