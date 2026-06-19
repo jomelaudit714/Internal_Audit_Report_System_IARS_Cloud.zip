@@ -183,3 +183,19 @@ This version adds a custom Streamlit component for smoother tagging:
 - Generate tagged PDF.
 
 This avoids the blocking form and reduces Streamlit rerun lag during dragging/resizing.
+
+
+## Pure Streamlit Drawable Box Editor
+
+This version removes the custom `pdf_box_editor` folder and uses `streamlit-drawable-canvas` only.
+
+Workflow:
+1. Upload PDF in `PDF Tagging Editor`.
+2. Adjust `PDF preview size`.
+3. Draw a rectangle directly on the PDF.
+4. Enter tag details only after the rectangle is drawn.
+5. Save the tag.
+6. Generate tagged PDF.
+7. Upload the tagged PDF in `Generate Extraction`.
+
+This avoids the custom component loading error.

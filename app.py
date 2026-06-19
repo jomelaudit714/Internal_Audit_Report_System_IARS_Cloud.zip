@@ -4,8 +4,6 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
-import base64
 
 from iars_parser import (
     AUDITORS,
@@ -23,29 +21,6 @@ st.set_page_config(
 )
 
 MASTER_DATA_PATH = Path("data/Master_Data.xlsx")
-
-_pdf_box_editor_component = components.declare_component(
-    "pdf_box_editor_component",
-    path=str(Path(__file__).parent / "pdf_box_editor"),
-)
-
-
-def pdf_box_editor(image_data: str, boxes=None, key=None):
-    return _pdf_box_editor_component(
-        image_data=image_data,
-        boxes=boxes or [],
-        default=[],
-        key=key,
-    )
-
-
-def pil_image_to_data_uri(img):
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return "data:image/png;base64," + encoded
-
-
 
 @st.cache_data(show_spinner=False)
 def load_master_data(path: str):
@@ -259,10 +234,11 @@ tab_extract, tab_editor = st.tabs(["Generate Extraction", "PDF Tagging Editor"])
 
 
 
+
 with tab_editor:
     st.subheader("PDF Tagging Editor")
     st.caption(
-        "Smooth editor: add, drag, resize, and edit boxes directly on the PDF. If no tag is needed, go directly to Generate Extraction."
+        "Pure Streamlit version: larger PDF preview, draw a rectangle on the PDF, then enter the tag. If no tag is needed, go directly to Generate Extraction."
     )
 
     tag_pdf = st.file_uploader(
@@ -283,10 +259,14 @@ with tab_editor:
             page_count = 0
 
         if page_count:
-            if "custom_tag_rows" not in st.session_state:
-                st.session_state["custom_tag_rows"] = pd.DataFrame(
+            if "tag_rows" not in st.session_state:
+                st.session_state["tag_rows"] = pd.DataFrame(
                     columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
                 )
+
+            st.info(
+                "Draw only one rectangle at a time. If you want a different place or size, press Clear Drawing and draw again."
+            )
 
             preview_page = st.number_input(
                 "Page to tag",
@@ -294,98 +274,138 @@ with tab_editor:
                 max_value=page_count,
                 value=1,
                 step=1,
-                key="custom_preview_page",
+                key="drawable_preview_page",
             )
 
-            preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1, zoom=1.85)
+            zoom = st.slider("PDF preview size", min_value=1.2, max_value=2.6, value=2.1, step=0.1)
+            preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1, zoom=zoom)
+
+            selected_rect = None
 
             if preview_img is not None:
-                st.info("Click **+ Add Box** inside the editor. Drag the box, resize it using the blue corner, and edit the text directly inside the box.")
+                st.markdown("### Draw Box on PDF")
+                st.caption("Draw a box where the tag should appear. The tag form will appear only after a box is drawn.")
 
-                existing_page_rows = st.session_state["custom_tag_rows"]
-                existing_boxes = []
-                if not existing_page_rows.empty:
-                    page_rows = existing_page_rows[existing_page_rows["Page"].astype(int) == int(preview_page)]
-                    for idx, row in page_rows.iterrows():
-                        existing_boxes.append({
-                            "id": f"saved_{idx}",
-                            "x_pct": float(row.get("X %", 8)),
-                            "y_pct": float(row.get("Y %", 12)) - (float(row.get("Box Height", 24)) / float(page_h) * 100),
-                            "w_pct": float(row.get("Box Width", 200)) / float(page_w) * 100,
-                            "h_pct": float(row.get("Box Height", 24)) / float(page_h) * 100,
-                            "text": str(row.get("Label Text", "")),
-                            "style": str(row.get("Style", "Box")),
-                            "font": float(row.get("Font Size", 11)),
-                        })
+                try:
+                    from streamlit_drawable_canvas import st_canvas
 
-                image_data = pil_image_to_data_uri(preview_img)
-                editor_boxes = pdf_box_editor(
-                    image_data=image_data,
-                    boxes=existing_boxes,
-                    key=f"custom_pdf_box_editor_{preview_page}_{tag_pdf.name}",
-                )
+                    img_w, img_h = preview_img.size
 
-                st.caption("When done moving/resizing/editing, click below to save the boxes from this page.")
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 255, 150, 0.25)",
+                        stroke_width=2,
+                        stroke_color="#111111",
+                        background_image=preview_img,
+                        update_streamlit=True,
+                        height=img_h,
+                        width=img_w,
+                        drawing_mode="rect",
+                        key=f"pdf_drawable_canvas_{tag_pdf.name}_{preview_page}",
+                    )
 
-                if st.button("Save Boxes From This Page", type="primary"):
-                    if editor_boxes:
-                        # Remove old rows for this page and replace with current editor boxes.
-                        remaining = st.session_state["custom_tag_rows"]
-                        if not remaining.empty:
-                            remaining = remaining[remaining["Page"].astype(int) != int(preview_page)]
+                    if canvas_result is not None and canvas_result.json_data is not None:
+                        objects = canvas_result.json_data.get("objects", [])
+                        rects = [obj for obj in objects if obj.get("type") == "rect"]
+                        if rects:
+                            selected_rect = rects[-1]
+
+                except Exception as e:
+                    st.warning("Drawable canvas is unavailable. Please check streamlit-drawable-canvas in requirements.txt.")
+                    st.image(preview_img, caption=f"Page {preview_page} preview")
+
+                if selected_rect:
+                    img_w, img_h = preview_img.size
+
+                    left = float(selected_rect.get("left", 0))
+                    top = float(selected_rect.get("top", 0))
+                    width = float(selected_rect.get("width", 0)) * float(selected_rect.get("scaleX", 1))
+                    height = float(selected_rect.get("height", 0)) * float(selected_rect.get("scaleY", 1))
+
+                    # Tag point uses bottom-left-ish coordinate for compatibility with PDF insertion.
+                    x_percent = round((left / img_w) * 100, 2)
+                    y_percent = round(((top + height) / img_h) * 100, 2)
+
+                    pdf_box_width = max(60.0, (width / img_w) * float(page_w))
+                    pdf_box_height = max(16.0, (height / img_h) * float(page_h))
+
+                    st.success(
+                        f"Box detected: Page {preview_page} | X {x_percent}% | Y {y_percent}% | Width {round(pdf_box_width, 1)} | Height {round(pdf_box_height, 1)}"
+                    )
+
+                    st.markdown("### Enter Text for the Box")
+
+                    with st.form("drawable_tag_form", clear_on_submit=False):
+                        tag_type = st.selectbox(
+                            "Tag Type",
+                            ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
+                        )
+
+                        if tag_type == "Auditor":
+                            tag_value = st.selectbox("Value", [""] + auditor_options)
+                        elif tag_type == "Reaction":
+                            tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
+                        elif tag_type == "Frequency Rate":
+                            tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
                         else:
-                            remaining = pd.DataFrame(
-                                columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
-                            )
+                            tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
 
-                        new_rows = []
-                        for box in editor_boxes:
-                            text = str(box.get("text", "") or "").strip()
-                            if not text:
-                                continue
+                        font_size = st.number_input(
+                            "Font size",
+                            min_value=6.0,
+                            max_value=24.0,
+                            value=11.0,
+                            step=1.0,
+                        )
 
-                            if ":" in text:
-                                tag_type, value = text.split(":", 1)
-                                tag_type = tag_type.strip()
-                                value = value.strip()
-                            else:
-                                tag_type = "Tag"
-                                value = text
+                        style = st.selectbox(
+                            "Display style",
+                            ["Box", "Highlight Box", "Plain Text"],
+                            index=0,
+                        )
 
-                            new_rows.append({
+                        label_text = normalize_tag_text(tag_type, tag_value)
+                        st.text_input("Text to insert", value=label_text, disabled=True)
+
+                        submitted = st.form_submit_button("Save This Box Tag", type="primary")
+
+                    if submitted:
+                        if not label_text:
+                            st.warning("Please enter a value before saving the tag.")
+                        else:
+                            new_row = pd.DataFrame([{
                                 "Page": int(preview_page),
                                 "Tag Type": tag_type,
-                                "Value": value,
-                                "Label Text": text,
-                                "X %": round(float(box.get("x_pct", 0)), 2),
-                                "Y %": round(float(box.get("y_pct", 0)), 2),
-                                "Font Size": float(box.get("font", 11)),
-                                "Style": str(box.get("style", "Box")),
-                                "Box Width": round(float(box.get("w_pct", 10)) / 100 * float(page_w), 2),
-                                "Box Height": round(float(box.get("h_pct", 4)) / 100 * float(page_h), 2),
-                            })
+                                "Value": tag_value,
+                                "Label Text": label_text,
+                                "X %": float(x_percent),
+                                "Y %": float(y_percent),
+                                "Font Size": float(font_size),
+                                "Style": style,
+                                "Box Width": float(pdf_box_width),
+                                "Box Height": float(pdf_box_height),
+                            }])
+                            st.session_state["tag_rows"] = pd.concat(
+                                [st.session_state["tag_rows"], new_row],
+                                ignore_index=True,
+                            )
+                            st.success(f"Saved: {label_text}")
+                            st.caption("Clear the drawing and draw the next box if you need another tag.")
 
-                        if new_rows:
-                            st.session_state["custom_tag_rows"] = pd.concat([remaining, pd.DataFrame(new_rows)], ignore_index=True)
-                            st.success(f"Saved {len(new_rows)} box tag(s) from page {preview_page}.")
-                        else:
-                            st.session_state["custom_tag_rows"] = remaining
-                            st.warning("No box text found to save.")
-                    else:
-                        st.warning("No boxes found in the editor.")
-
-            else:
-                st.warning("PDF preview requires PyMuPDF and Pillow.")
+                else:
+                    st.info("No box drawn yet. Draw a rectangle on the PDF to show the tag form.")
 
             st.divider()
             st.markdown("### Saved Tags")
             tag_rows = st.data_editor(
-                st.session_state["custom_tag_rows"],
+                st.session_state["tag_rows"],
                 width="stretch",
                 num_rows="dynamic",
                 column_config={
                     "Page": st.column_config.NumberColumn("Page", min_value=1, max_value=page_count, step=1),
-                    "Tag Type": st.column_config.TextColumn("Tag Type"),
+                    "Tag Type": st.column_config.SelectboxColumn(
+                        "Tag Type",
+                        options=["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction", "Tag"],
+                    ),
                     "X %": st.column_config.NumberColumn("X %", min_value=0.0, max_value=100.0, step=0.5),
                     "Y %": st.column_config.NumberColumn("Y %", min_value=0.0, max_value=100.0, step=0.5),
                     "Font Size": st.column_config.NumberColumn("Font Size", min_value=6.0, max_value=24.0, step=1.0),
@@ -397,7 +417,7 @@ with tab_editor:
                     "Box Height": st.column_config.NumberColumn("Box Height", min_value=12.0, max_value=160.0, step=2.0),
                 },
             )
-            st.session_state["custom_tag_rows"] = tag_rows
+            st.session_state["tag_rows"] = tag_rows
 
             cgen, cclear = st.columns([1, 1])
             with cgen:
@@ -416,7 +436,7 @@ with tab_editor:
 
             with cclear:
                 if st.button("Clear All Saved Tags"):
-                    st.session_state["custom_tag_rows"] = pd.DataFrame(
+                    st.session_state["tag_rows"] = pd.DataFrame(
                         columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
                     )
                     st.rerun()
