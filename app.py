@@ -310,7 +310,8 @@ with tab_editor:
                             selected_rect = rects[-1]
 
                 except Exception as e:
-                    st.warning("Drawable canvas is unavailable. Please check streamlit-drawable-canvas in requirements.txt.")
+                    st.error(f"Drawable canvas error: {e}")
+                    raise
                     st.image(preview_img, caption=f"Page {preview_page} preview")
 
                 if selected_rect:
