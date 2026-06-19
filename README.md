@@ -197,5 +197,6 @@ Workflow:
 5. Save the tag.
 6. Generate tagged PDF.
 7. Upload the tagged PDF in `Generate Extraction`.
+   
 
 This avoids the custom component loading error.
