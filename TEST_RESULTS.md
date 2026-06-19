@@ -1,46 +1,52 @@
-# IARS v2.5 Test Results
+# IARS v2.6 Test Results
 
 Test date: June 19, 2026
 
-## Report 2026IAD222 reproduction test
+## Focused explanation-rule tests
 
-The uploaded tagged PDF was processed with the Version 2.4 parser before the correction. The first row incorrectly returned:
+Passed for all required phrases:
 
-- Issue Detail Issue: `REVOLVING FUND`
-- Finding Category: `Ignore or Disregard Office/Operation Best Practices -3`
+1. `The overage occurred because ...`
+2. `The shortage occurred because ...`
+3. `The discrepancy occurred because ...`
+4. `This occurred due to ...`
+5. `This occured due to ...`
 
-After the Version 2.5 correction, the same PDF returns:
+The words after each phrase were returned as the Explanation.
 
-- Issue Detail Issue: `CASH OVERAGE – P10,996.31`
-- Finding Category: `Cash/Fund/Collection Overage (₱1,000.00 and above) -4`
-
-The parser also retained the expected Task ID `001`, auditor `Patricia Anne S. Del Rosario`, auditee match, and `2nd Time` frequency.
-
-## Repeated deterministic test
-
-The complete 2026IAD222 extraction was run five consecutive times.
+## INCOMPLETE DETAILS IN PCV tests
 
 Passed:
 
-- identical output hash on all five runs
-- identical seven extracted rows on all five runs
-- first issue remained `CASH OVERAGE – P10,996.31`
-- no audit activity heading appeared in Issue Detail Issue
+- Generic title + narrative containing PAYEE and AMOUNT -> `INCOMPLETE DETAILS IN PCV - PAYEE, AMOUNT`
+- Existing PAYEE title + narrative containing PAYEE and AMOUNT -> adds AMOUNT only
+- Existing PAYEE and AMOUNT title + same narrative -> no duplicate fields
 
-## Synthetic title-selection tests
+## 2026IAD222 integration test
+
+The tagged Vet City Marikina report was processed five consecutive times with identical output.
+
+Confirmed results:
+
+- Issue 1 title: `CASH OVERAGE - P10,996.31`
+- Issue 1 Explanation begins: `Some revolving fund transactions were initially paid using the custodian's personal funds ...`
+- Issue 2 title: `INCOMPLETE DETAILS IN PCV - PAYEE, AMOUNT`
+- Issue 6 Explanation: `Usage of P3,337.00 cash sales to fund the operation's expenses since their revolving fund was insufficient.`
+- Seven findings retained
+
+## Cross-page continuation test
 
 Passed:
 
-- `REVOLVING FUND` followed by `CASH OVERAGE – P10,996.31` -> captures `CASH OVERAGE – P10,996.31`
-- `PETTY CASH FUND` followed by `NO CASH SHORTAGE/OVERAGE` -> captures `NO CASH SHORTAGE/OVERAGE`
-- `SALES AND COLLECTION` with merged tags followed by `CASH SHORTAGE: (P3,274.00)` -> captures the cash shortage
-- `REVOLVING FUND COUNT` followed by `INCOMPLETE DETAILS IN PCV` -> captures the PCV issue
-- `MIXING OF PETTY CASH AND REVOLVING FUND` remains a valid true issue and is not discarded
+- Page 2 opening continuation was appended to Issue 1.
+- Page 3 opening continuation was appended to Issue 6.
+- Exhibit pages were excluded from continuation handling.
 
-## Searchable PDF regression tests
+## Regression tests
 
-Nonempty extraction results and valid issue titles were confirmed for:
+Successful nonempty extraction was confirmed for 11 PDFs:
 
+- 2026IAD013 - Angelica Cuevas: 5 rows
 - 2026IAD209 - Michelle Mesa: 3 rows
 - 2026IAD211 - Mia Montejo: 1 row
 - 2026IAD212 - Mirz Dula-ugon: 1 row
@@ -48,36 +54,19 @@ Nonempty extraction results and valid issue titles were confirmed for:
 - 2026IAD215 - Jennel Kate Fortin: 6 rows
 - 2026IAD220 - Jugine Corpuz: 4 rows
 - 2026IAD221 - Timothy So: 1 row
-- 2026IAD013 - Angelica Cuevas: 5 rows
+- CamScanner 06-17-2026 23.10: 8 rows
+- EMERITO: 8 rows
+- 2026IAD222 - Vet City Marikina: 7 rows
 
-No extracted Issue Detail Issue matched an activity heading.
+## Technical verification
 
-## OCR/scanned PDF regression tests
+- `iars_parser.py` compilation: passed
+- `app.py` compilation: passed
+- `iars_pdf_editor.py` compilation: passed
+- Five-run deterministic 2026IAD222 extraction: passed
+- Required output columns preserved
+- Existing Master Data preserved
 
-Passed:
+## Limitation
 
-- EMERITO.pdf: 8 rows
-- CamScanner 06-17-2026 23.10.pdf: 8 rows
-
-The existing handwritten Task ID, auditor, auditee, frequency, and reaction carry-forward logic remained operational.
-
-## Code verification
-
-Passed:
-
-- `app.py` Python compilation
-- `iars_parser.py` Python compilation
-- `iars_pdf_editor.py` Python compilation
-- exact uploaded Master Data SHA-256 match
-
-## Master Data verification
-
-SHA-256 of the included `data/Master_Data.xlsx`:
-
-`b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
-
-This matches the uploaded `Master_Data(2).xlsx` exactly.
-
-## Deployment note
-
-The parser and source code were tested locally against the uploaded report and the regression files. The live Streamlit Cloud environment should still be checked once after GitHub redeployment because platform caching and browser behavior are external to the ZIP.
+The rules were validated against the listed files and focused test cases. Reports with materially different layouts or wording may still require a future parser adjustment.

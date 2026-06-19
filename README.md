@@ -1,46 +1,51 @@
-# Internal Audit Report System (IARS) v2.5
+# Internal Audit Report System (IARS) v2.6
 
-## Main parser correction
+## Main parser corrections
 
-Version 2.5 corrects Issue Detail Issue selection when an audit activity heading appears above the actual finding.
+### 1. Cause statements now populate Explanation
 
-The following are treated only as audit activity/context headings and are never captured as the issue title:
+When an issue narrative contains any of the following phrases, IARS captures the words immediately after the phrase as the Explanation:
 
-- `REVOLVING FUND`
-- `PETTY CASH FUND`
-- `CASH ADVANCE` / `CASH ADVANCES`
-- `SALES AND COLLECTION`
-- `CASH SALES AND COLLECTION`
-- `CHANGE FUND`
-- `DELIVERY FUND`
-- similar headings ending in `COUNT`
+- `The overage occurred because ...`
+- `The shortage occurred because ...`
+- `The discrepancy occurred because ...`
+- `The overage/shortage/discrepancy occurred due to ...`
+- `This occurred due to ...`
+- `This occured due to ...` (common misspelling also supported)
 
-The parser now skips those headings and captures the next true issue title. It also removes merged PDF editor tags such as `Auditee:`, `Auditor:`, `Task ID:`, `Frequency Rate:`, and `Reaction:` from title detection.
+The cause statement is prioritized before the existing auditee-explanation patterns.
 
-### Confirmed example
+### 2. INCOMPLETE DETAILS IN PCV combines missing fields without duplicates
 
-For Report `2026IAD222`, the first finding is now extracted as:
+The parser now applies this rule:
 
-- **Issue Detail Issue:** `CASH OVERAGE – P10,996.31`
-- **Finding Category:** `Cash/Fund/Collection Overage (₱1,000.00 and above) -4`
+- If the title is only `INCOMPLETE DETAILS IN PCV`, collect all specific incomplete fields stated in the narrative.
+- If the title already includes one or more fields, preserve those fields and add only other fields stated in the narrative.
+- Do not repeat fields already present in the title.
 
-It no longer captures `REVOLVING FUND` as the issue.
+Example:
 
-## PDF textbox editor
+- Existing title: `INCOMPLETE DETAILS IN PCV - PAYEE`
+- Narrative: `... incomplete details, particularly in the payee and amount fields.`
+- Final title: `INCOMPLETE DETAILS IN PCV - PAYEE, AMOUNT`
 
-The Version 2.4 component-registration, page persistence, direct typing, drag repositioning, resizing, and tight textbox spacing fixes are retained.
+### 3. Cross-page finding continuation
 
-- Double-right-click the same PDF location to add a textbox.
-- Click inside the textbox and type directly.
-- Drag the blue `move` strip to reposition the textbox.
-- Drag the side or corner handles to resize it.
-- Use `Fit text` to tighten the box around the text.
-- Textbox records are maintained across PDF pages.
-- Generate and download a searchable tagged PDF.
+A finding narrative that continues at the top of the next report page without repeating the issue number is appended to the preceding finding. Exhibit pages are excluded. This allows cause statements such as `This occurred due to ...` on the next page to be captured correctly.
+
+## Preserved functionality
+
+- PDF textbox editor from Version 2.5
+- Double-right-click textbox creation
+- Direct typing, drag repositioning, and drag resizing
+- PDF page-state persistence
+- True issue-title selection instead of activity headings
+- Existing extraction, OCR, tagging, scoring, and classification rules
+- Existing `data/Master_Data.xlsx`
 
 ## Deployment
 
-Upload all files and folders from this package to the root of the GitHub repository:
+Replace all repository files with the contents of this ZIP:
 
 - `app.py`
 - `iars_parser.py`
@@ -49,12 +54,4 @@ Upload all files and folders from this package to the root of the GitHub reposit
 - `packages.txt`
 - `data/Master_Data.xlsx`
 
-Replace the older files instead of mixing versions. After Streamlit finishes redeploying, press `Ctrl + F5` once.
-
-## Master Data
-
-The included `data/Master_Data.xlsx` is unchanged from the uploaded `Master_Data(2).xlsx`.
-
-## Tested environment
-
-The dependency versions remain pinned in `requirements.txt`, including Streamlit 1.58.0 for Streamlit Cloud deployment.
+After Streamlit finishes redeploying, press `Ctrl + F5` once.

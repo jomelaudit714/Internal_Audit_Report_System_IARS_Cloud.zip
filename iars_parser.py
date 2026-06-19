@@ -449,45 +449,108 @@ def infer_issue_title_from_narrative(issue_title, narrative):
 
 
 
+def _pcv_detail_fields(text, *, title_context=False):
+    """Return specific incomplete PCV fields in their textual order.
+
+    For an existing issue-title suffix, ordinary field words are accepted directly.
+    For narrative text, broad words such as ``amount`` and ``date`` are accepted only
+    when they are presented as incomplete/missing fields, preventing unrelated
+    transaction amounts or dates from being added to the title.
+    """
+    source = clean_text(text)
+    lower = source.lower()
+    matches = []
+
+    def add(label, pattern, flags=re.I):
+        m = re.search(pattern, source, flags)
+        if m:
+            matches.append((m.start(), label))
+
+    add("RECIPIENT'S SIGNATURE", r"recipient(?:'s)?\s+signature")
+    add("APPROVED BY", r"approved\s+by")
+    add("ACCOUNT CODE", r"account\s+code")
+    add("PARTICULARS", r"\bparticulars?\b")
+    add("PAYEE", r"\bpayee\b")
+
+    if title_context:
+        add("AMOUNT", r"\bamount\b")
+        add("PCV DATE", r"\b(?:pcv\s+)?date\b")
+        add("APPROVAL", r"\b(?:approval|approver)\b")
+    else:
+        # Amount is included only when the narrative identifies it as an
+        # incomplete/missing field, not merely because transaction amounts appear.
+        amount_context = re.search(
+            r"(?:payee\s*(?:,|and|&)\s*amount|amount\s*(?:,|and|&)\s*payee|"
+            r"amount\s+fields?|(?:incomplete|missing|blank|without|no)"
+            r".{0,90}\bamount\b)",
+            source,
+            re.I,
+        )
+        if amount_context:
+            amount_word = re.search(r"\bamount\b", source, re.I)
+            if amount_word:
+                matches.append((amount_word.start(), "AMOUNT"))
+
+        date_context = re.search(
+            r"(?:pcv\s+date|date\s+fields?|(?:incomplete|missing|blank|without|no)"
+            r".{0,90}\bdate\b)",
+            source,
+            re.I,
+        )
+        if date_context:
+            date_word = re.search(r"\b(?:pcv\s+)?date\b", source, re.I)
+            if date_word:
+                matches.append((date_word.start(), "PCV DATE"))
+
+        add("APPROVAL", r"\b(?:approval|approver)\b")
+
+    # A generic signature is used only when a more specific signature label is absent.
+    add("SIGNATURE", r"\bsignature\b")
+
+    matches.sort(key=lambda item: item[0])
+    fields = []
+    for _, label in matches:
+        if label == "SIGNATURE" and "RECIPIENT'S SIGNATURE" in fields:
+            continue
+        if label == "APPROVAL" and "APPROVED BY" in fields:
+            continue
+        if label not in fields:
+            fields.append(label)
+    return fields
+
+
 def enhance_issue_title_details(issue_title, narrative):
-    """Add missing-detail qualifier to generic issue titles when the report identifies the field."""
+    """Complete an INCOMPLETE DETAILS IN PCV title without duplicating fields.
+
+    Rules:
+    - If the title contains no particular field, collect all stated missing fields
+      from the narrative.
+    - If the title already contains one or more fields, preserve them and add only
+      additional fields stated in the narrative.
+    - Never repeat a field already present in the title.
+    """
     title = clean_text(issue_title)
     lower_title = title.lower()
-    text = clean_text(f"{issue_title} {narrative}")
-    lower = text.lower()
 
     if lower_title.startswith("incomplete details in pcv"):
-        m = re.search(r"incomplete details in pcv\s*:\s*(.+)", title, re.I)
-        if m:
-            details = clean_text(m.group(1)).upper()
-            return f"INCOMPLETE DETAILS IN PCV - {details}"
+        base = "INCOMPLETE DETAILS IN PCV"
+        suffix = re.sub(
+            r"^incomplete details in pcv\s*(?::|[-–—])?\s*",
+            "",
+            title,
+            flags=re.I,
+        )
 
-        fields = []
-        quoted = re.findall(r"[“\"]([^”\"]+)[”\"]", text)
-        for q in quoted:
-            q_clean = clean_text(q).strip()
-            if q_clean and len(q_clean) <= 50:
-                fields.append(q_clean.upper())
+        fields = _pcv_detail_fields(suffix, title_context=True) if suffix else []
+        narrative_fields = _pcv_detail_fields(narrative, title_context=False)
 
-        if "recipient" in lower and "signature" in lower:
-            fields.append("RECIPIENT'S SIGNATURE")
-        if "pcv date" in lower or ("date" in lower and "pcv" in lower):
-            fields.append("PCV DATE")
-        if "payee" in lower:
-            fields.append("PAYEE")
-        if "approved by" in lower:
-            fields.append("APPROVED BY")
-        elif "approval" in lower or "approver" in lower:
-            fields.append("APPROVAL")
-        if "signature" in lower and not fields:
-            fields.append("SIGNATURE")
+        for field in narrative_fields:
+            if field not in fields:
+                fields.append(field)
 
         if fields:
-            clean_fields = []
-            for f in fields:
-                if f and f not in clean_fields:
-                    clean_fields.append(f)
-            return f"INCOMPLETE DETAILS IN PCV - {', '.join(clean_fields)}"
+            return f"{base} - {', '.join(fields)}"
+        return base
 
     return title
 
@@ -953,7 +1016,7 @@ def _strip_explanation_tail(text):
     text = clean_text(text)
     # Cut obvious non-explanation portions.
     stop_patterns = [
-        r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)",
+        r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?(?:\s*(?:and|,)\s*(?:Exhibit\s*)?[A-Z](?:\.\d+)?)*\)",
         r"\bWe recommend\b",
         r"\bWe advise\b",
         r"\bPlease review\b",
@@ -1006,6 +1069,11 @@ def extract_explanation_from_narrative(narrative):
     text = clean_text(text)
 
     patterns = [
+        # Direct cause statements used in audit narratives. Capture only the words
+        # after the causal phrase and place them in Explanation.
+        r"\bthe\s+(?:overage|shortage|discrepancy)\s+occur{1,2}ed\s+because\s+(.+)",
+        r"\bthe\s+(?:overage|shortage|discrepancy)\s+occur{1,2}ed\s+due\s+to\s+(.+)",
+        r"\bthis\s+occur{1,2}ed\s+due\s+to\s+(.+)",
         # According to Ms. Montejo, she was uncertain...
         r"(?:According to|As per)\s+(?:Mr\.|Ms\.|Mrs\.)?\s*[A-Z][A-Za-zñÑ .'\-]+?,\s*(.+)",
         # Ms. Mesa explained that she was...
@@ -1352,7 +1420,7 @@ def concise_text(text, max_words=25, field="general"):
     if field == "correction" and re.search(r"\b(Ms|Mr|Mrs)\.?$", text, re.I):
         return "None"
 
-    text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?\)", "", text, flags=re.I)
+    text = re.sub(r"\(See(?: also)? Exhibit [A-Z](?:\.\d+)?(?:\s*(?:and|,)\s*(?:Exhibit\s*)?[A-Z](?:\.\d+)?)*\)", "", text, flags=re.I)
     text = re.sub(r"\s+", " ", text).strip()
 
     text = re.sub(
@@ -2248,9 +2316,12 @@ def extract_finding_rows_from_pdf(pdf_file, full_text=None, master_df=None, audi
     # Primary table extraction for searchable PDFs.
     try:
         with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
+            for page_index, page in enumerate(pdf.pages):
+                page_text = clean_text(page.extract_text() or "")
+                is_exhibit_page = page_text.upper().startswith("EXHIBIT")
+
                 for table in page.extract_tables() or []:
-                    for row in table:
+                    for row_index, row in enumerate(table):
                         if not row:
                             continue
 
@@ -2263,6 +2334,40 @@ def extract_finding_rows_from_pdf(pdf_file, full_text=None, master_df=None, audi
                                 break
 
                         if not issue_no:
+                            # A finding can continue at the top of the next PDF page
+                            # without repeating its issue number. Append only the first
+                            # substantive table row on a non-exhibit page to the most
+                            # recent finding. This captures cause statements such as
+                            # "This occurred due to ..." that otherwise become detached.
+                            if rows and row_index == 0 and page_index > 0 and not is_exhibit_page:
+                                candidates = []
+                                for cell_index, cell in enumerate(cells):
+                                    value = clean_text(cell)
+                                    if not value or value in [".", "-"]:
+                                        continue
+                                    upper = value.upper()
+                                    if upper in ["ISSUE", "NO.", "NO", "AUDIT FINDINGS", "RECOMMENDATION"]:
+                                        continue
+                                    # The right-most column is normally Recommendation;
+                                    # prefer finding-column text when another candidate exists.
+                                    candidates.append((cell_index, value))
+
+                                if candidates:
+                                    non_last = [item for item in candidates if item[0] < len(cells) - 1]
+                                    pool = non_last or candidates
+                                    continuation = max(pool, key=lambda item: len(item[1]))[1]
+
+                                    if len(continuation) >= 25 and not re.match(
+                                        r"^(?:We recommend|We advise|Please review)\b",
+                                        continuation,
+                                        re.I,
+                                    ):
+                                        combined_narrative = clean_cell_preserve(
+                                            f"{rows[-1].get('narrative', '')}\n{continuation}"
+                                        )
+                                        rows[-1]["narrative"] = remove_action_taken(combined_narrative)
+                                        rows[-1]["explanation"] = extract_explanation_from_narrative(combined_narrative)
+                                        rows[-1]["correction"] = extract_correction_from_text(combined_narrative)
                             continue
 
                         non_empty = [c for c in cells if clean_text(c)]
