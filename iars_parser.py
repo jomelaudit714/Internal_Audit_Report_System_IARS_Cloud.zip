@@ -2004,7 +2004,7 @@ def detect_ocr_task_auditor_from_line(line, auditors_df=None):
     Improved recognition:
     - TASK ID:001 / TASK ID. 001 / TASKID001 / TASK 1D:001
     - noisy TASK 103 / TASK 066 -> 001
-    - noisy AK \D. 002 -> 002
+    - noisy AK \\D. 002 -> 002
     - noisy ASK IP. 00% -> 003
     - AUDITOR Patricia / Sarina, including noisy OCR variants.
     """

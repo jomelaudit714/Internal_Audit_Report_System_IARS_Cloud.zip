@@ -1,9 +1,13 @@
 
 from pathlib import Path
 from io import BytesIO
+import base64
+import hashlib
 
 import pandas as pd
 import streamlit as st
+
+from iars_pdf_editor import pdf_textbox_editor
 
 from iars_parser import (
     AUDITORS,
@@ -94,13 +98,7 @@ def draw_preview_box(img, x_percent, y_percent, box_width_px=220, box_height_px=
 
 
 def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
-    """Insert typed tags into the PDF at normalized positions.
-
-    Supports:
-    - Plain Text
-    - Box
-    - Highlight Box
-    """
+    """Insert typed PDF editor tags using percentage-based coordinates."""
     import fitz
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -114,59 +112,79 @@ def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
             page_index = int(row.get("Page", 1)) - 1
             x_percent = float(row.get("X %", 8))
             y_percent = float(row.get("Y %", 12))
+            width_percent = float(row.get("Width %", 30))
+            height_percent = float(row.get("Height %", 6))
             font_size = float(row.get("Font Size", 11))
-            box_width = float(row.get("Box Width", 210))
-            box_height = float(row.get("Box Height", 22))
             style = str(row.get("Style", "Box") or "Box")
-        except Exception:
+        except (TypeError, ValueError):
             continue
 
         if page_index < 0 or page_index >= len(doc):
             continue
 
         page = doc.load_page(page_index)
-        x = max(0, min(100, x_percent)) / 100 * page.rect.width
-        y = max(0, min(100, y_percent)) / 100 * page.rect.height
+        x0 = max(0, min(100, x_percent)) / 100 * page.rect.width
+        y0 = max(0, min(100, y_percent)) / 100 * page.rect.height
+        width = max(2, min(100, width_percent)) / 100 * page.rect.width
+        height = max(1, min(100, height_percent)) / 100 * page.rect.height
+        x1 = min(page.rect.width, x0 + width)
+        y1 = min(page.rect.height, y0 + height)
+        rect = fitz.Rect(x0, y0, x1, y1)
 
-        if style in ["Box", "Highlight Box"]:
-            rect = fitz.Rect(x, y - font_size - 5, x + box_width, y + box_height - font_size - 5)
+        if style == "Highlight Box":
+            page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 0.65), width=0.8)
+        elif style == "Box":
+            page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 1), width=0.8)
 
-            if style == "Highlight Box":
-                page.draw_rect(
-                    rect,
-                    color=(0, 0, 0),
-                    fill=(1, 1, 0.65),
-                    width=0.8,
-                )
-            else:
-                page.draw_rect(
-                    rect,
-                    color=(0, 0, 0),
-                    fill=(1, 1, 1),
-                    width=0.8,
-                )
+        text_rect = fitz.Rect(rect.x0 + 4, rect.y0 + 3, rect.x1 - 4, rect.y1 - 3)
+        remaining = page.insert_textbox(
+            text_rect,
+            label_text,
+            fontsize=font_size,
+            fontname="helv",
+            color=(0, 0, 0),
+            align=fitz.TEXT_ALIGN_LEFT,
+        )
 
-            text_point = fitz.Point(rect.x0 + 5, rect.y0 + font_size + 2)
-            page.insert_text(
-                text_point,
+        # If the user's box is too small, retry with a slightly smaller font so
+        # the essential tag remains visible and machine-readable.
+        if remaining < 0 and font_size > 7:
+            page.insert_textbox(
+                text_rect,
                 label_text,
-                fontsize=font_size,
+                fontsize=max(7, font_size - 2),
                 fontname="helv",
                 color=(0, 0, 0),
-            )
-        else:
-            page.insert_text(
-                fitz.Point(x, y),
-                label_text,
-                fontsize=font_size,
-                fontname="helv",
-                color=(0, 0, 0),
+                align=fitz.TEXT_ALIGN_LEFT,
             )
 
     output = BytesIO()
-    doc.save(output)
+    doc.save(output, garbage=4, deflate=True)
     output.seek(0)
     return output.getvalue()
+
+
+def image_to_data_uri(image):
+    """Convert a rendered PIL page image to a browser-ready data URI."""
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def editor_file_id(file_name: str, pdf_bytes: bytes) -> str:
+    digest = hashlib.sha256(pdf_bytes).hexdigest()[:12]
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in file_name)[:40]
+    return f"{safe_name}_{digest}"
+
+
+def component_editor_value(state):
+    """Read a Components v2 state value from dict-like or result objects."""
+    if state is None:
+        return {"boxes": [], "selected_id": None}
+    if isinstance(state, dict):
+        return state.get("editor", {"boxes": [], "selected_id": None})
+    return getattr(state, "editor", {"boxes": [], "selected_id": None})
 
 
 def normalize_tag_text(tag_type: str, value: str):
@@ -238,7 +256,8 @@ tab_extract, tab_editor = st.tabs(["Generate Extraction", "PDF Tagging Editor"])
 with tab_editor:
     st.subheader("PDF Tagging Editor")
     st.caption(
-        "Pure Streamlit version: larger PDF preview, draw a rectangle on the PDF, then enter the tag. If no tag is needed, go directly to Generate Extraction."
+        "Double-right-click the PDF to add a textbox. Click inside to type, "
+        "drag the top strip to reposition, and drag the blue handles to resize."
     )
 
     tag_pdf = st.file_uploader(
@@ -249,201 +268,123 @@ with tab_editor:
 
     if tag_pdf is not None:
         pdf_bytes = tag_pdf.getvalue()
+        file_id = editor_file_id(tag_pdf.name, pdf_bytes)
 
         try:
             import fitz
+
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             page_count = len(doc)
-        except Exception as e:
-            st.error(f"Unable to open PDF: {e}")
+        except Exception as exc:
+            st.error(f"Unable to open PDF: {exc}")
             page_count = 0
 
         if page_count:
-            if "tag_rows" not in st.session_state:
-                st.session_state["tag_rows"] = pd.DataFrame(
-                    columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
+            clear_request_key = f"clear_pdf_editor_request_{file_id}"
+            if st.session_state.pop(clear_request_key, False):
+                for state_key in list(st.session_state.keys()):
+                    if state_key.startswith(f"iars_pdf_editor_{file_id}_page_"):
+                        del st.session_state[state_key]
+                st.session_state.pop(f"tagged_pdf_{file_id}", None)
+
+            controls_left, controls_right = st.columns([1, 2])
+            with controls_left:
+                preview_page = st.number_input(
+                    "Page to tag",
+                    min_value=1,
+                    max_value=page_count,
+                    value=1,
+                    step=1,
+                    key=f"editor_page_{file_id}",
+                )
+            with controls_right:
+                st.info(
+                    "First right-click marks the location; right-click the same spot again "
+                    "to create the textbox. The browser menu is suppressed inside the PDF."
                 )
 
-            st.info(
-                "Draw only one rectangle at a time. If you want a different place or size, press Clear Drawing and draw again."
+            preview_img, page_width, page_height = render_pdf_page(
+                pdf_bytes,
+                int(preview_page) - 1,
+                zoom=1.7,
             )
 
-            preview_page = st.number_input(
-                "Page to tag",
-                min_value=1,
-                max_value=page_count,
-                value=1,
-                step=1,
-                key="drawable_preview_page",
-            )
+            if preview_img is None:
+                st.error("Unable to render this PDF page.")
+            else:
+                component_key = f"iars_pdf_editor_{file_id}_page_{int(preview_page)}"
+                current_state = st.session_state.get(component_key, {})
+                initial_editor = component_editor_value(current_state)
+                initial_boxes = initial_editor.get("boxes", [])
 
-            zoom = st.slider("PDF preview size", min_value=1.2, max_value=2.6, value=2.1, step=0.1)
-            preview_img, page_w, page_h = render_pdf_page(pdf_bytes, int(preview_page) - 1, zoom=zoom)
+                editor_result = pdf_textbox_editor(
+                    image_data=image_to_data_uri(preview_img),
+                    initial_boxes=initial_boxes,
+                    key=component_key,
+                    height=940,
+                )
 
-            selected_rect = None
+                current_editor = component_editor_value(editor_result)
+                boxes = current_editor.get("boxes", [])
+                nonempty_boxes = [box for box in boxes if str(box.get("text", "")).strip()]
+                st.caption(
+                    f"Page {int(preview_page)}: {len(boxes)} textbox(es), "
+                    f"{len(nonempty_boxes)} containing text."
+                )
 
-            if preview_img is not None:
-                st.markdown("### Draw Box on PDF")
-                st.caption("Draw a box where the tag should appear. The tag form will appear only after a box is drawn.")
-
-                try:
-                    from streamlit_drawable_canvas import st_canvas
-
-                    img_w, img_h = preview_img.size
-
-                    canvas_result = st_canvas(
-                        fill_color="rgba(255, 255, 150, 0.25)",
-                        stroke_width=2,
-                        stroke_color="#111111",
-                        background_image=preview_img,
-                        update_streamlit=True,
-                        height=img_h,
-                        width=img_w,
-                        drawing_mode="rect",
-                        key=f"pdf_drawable_canvas_{tag_pdf.name}_{preview_page}",
+            all_tag_rows = []
+            for page_number in range(1, page_count + 1):
+                page_key = f"iars_pdf_editor_{file_id}_page_{page_number}"
+                page_editor = component_editor_value(st.session_state.get(page_key, {}))
+                for box in page_editor.get("boxes", []):
+                    label_text = str(box.get("text", "") or "").strip()
+                    if not label_text:
+                        continue
+                    all_tag_rows.append(
+                        {
+                            "Page": page_number,
+                            "Label Text": label_text,
+                            "X %": float(box.get("x_pct", 0)),
+                            "Y %": float(box.get("y_pct", 0)),
+                            "Width %": float(box.get("w_pct", 30)),
+                            "Height %": float(box.get("h_pct", 6)),
+                            "Font Size": float(box.get("font_size", 11)),
+                            "Style": str(box.get("style", "Box")),
+                        }
                     )
 
-                    if canvas_result is not None and canvas_result.json_data is not None:
-                        objects = canvas_result.json_data.get("objects", [])
-                        rects = [obj for obj in objects if obj.get("type") == "rect"]
-                        if rects:
-                            selected_rect = rects[-1]
+            if all_tag_rows:
+                with st.expander(f"Review saved textbox data ({len(all_tag_rows)})"):
+                    st.dataframe(pd.DataFrame(all_tag_rows), width="stretch", hide_index=True)
+            else:
+                st.info("No completed textbox tags yet. You may proceed without tags or add them in the editor.")
 
-                except Exception as e:
-                    st.error(f"Drawable canvas error: {e}")
-                    raise
-                    st.image(preview_img, caption=f"Page {preview_page} preview")
-
-                if selected_rect:
-                    img_w, img_h = preview_img.size
-
-                    left = float(selected_rect.get("left", 0))
-                    top = float(selected_rect.get("top", 0))
-                    width = float(selected_rect.get("width", 0)) * float(selected_rect.get("scaleX", 1))
-                    height = float(selected_rect.get("height", 0)) * float(selected_rect.get("scaleY", 1))
-
-                    # Tag point uses bottom-left-ish coordinate for compatibility with PDF insertion.
-                    x_percent = round((left / img_w) * 100, 2)
-                    y_percent = round(((top + height) / img_h) * 100, 2)
-
-                    pdf_box_width = max(60.0, (width / img_w) * float(page_w))
-                    pdf_box_height = max(16.0, (height / img_h) * float(page_h))
-
-                    st.success(
-                        f"Box detected: Page {preview_page} | X {x_percent}% | Y {y_percent}% | Width {round(pdf_box_width, 1)} | Height {round(pdf_box_height, 1)}"
-                    )
-
-                    st.markdown("### Enter Text for the Box")
-
-                    with st.form("drawable_tag_form", clear_on_submit=False):
-                        tag_type = st.selectbox(
-                            "Tag Type",
-                            ["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction"],
-                        )
-
-                        if tag_type == "Auditor":
-                            tag_value = st.selectbox("Value", [""] + auditor_options)
-                        elif tag_type == "Reaction":
-                            tag_value = st.selectbox("Value", [""] + REACTION_OPTIONS)
-                        elif tag_type == "Frequency Rate":
-                            tag_value = st.selectbox("Value", [""] + FREQUENCY_OPTIONS)
-                        else:
-                            tag_value = st.text_input("Value", placeholder="Example: 001 or Emerito Bondoc")
-
-                        font_size = st.number_input(
-                            "Font size",
-                            min_value=6.0,
-                            max_value=24.0,
-                            value=11.0,
-                            step=1.0,
-                        )
-
-                        style = st.selectbox(
-                            "Display style",
-                            ["Box", "Highlight Box", "Plain Text"],
-                            index=0,
-                        )
-
-                        label_text = normalize_tag_text(tag_type, tag_value)
-                        st.text_input("Text to insert", value=label_text, disabled=True)
-
-                        submitted = st.form_submit_button("Save This Box Tag", type="primary")
-
-                    if submitted:
-                        if not label_text:
-                            st.warning("Please enter a value before saving the tag.")
-                        else:
-                            new_row = pd.DataFrame([{
-                                "Page": int(preview_page),
-                                "Tag Type": tag_type,
-                                "Value": tag_value,
-                                "Label Text": label_text,
-                                "X %": float(x_percent),
-                                "Y %": float(y_percent),
-                                "Font Size": float(font_size),
-                                "Style": style,
-                                "Box Width": float(pdf_box_width),
-                                "Box Height": float(pdf_box_height),
-                            }])
-                            st.session_state["tag_rows"] = pd.concat(
-                                [st.session_state["tag_rows"], new_row],
-                                ignore_index=True,
-                            )
-                            st.success(f"Saved: {label_text}")
-                            st.caption("Clear the drawing and draw the next box if you need another tag.")
-
-                else:
-                    st.info("No box drawn yet. Draw a rectangle on the PDF to show the tag form.")
-
-            st.divider()
-            st.markdown("### Saved Tags")
-            tag_rows = st.data_editor(
-                st.session_state["tag_rows"],
-                width="stretch",
-                num_rows="dynamic",
-                column_config={
-                    "Page": st.column_config.NumberColumn("Page", min_value=1, max_value=page_count, step=1),
-                    "Tag Type": st.column_config.SelectboxColumn(
-                        "Tag Type",
-                        options=["Task ID", "Auditor", "Auditee", "Frequency Rate", "Reaction", "Tag"],
-                    ),
-                    "X %": st.column_config.NumberColumn("X %", min_value=0.0, max_value=100.0, step=0.5),
-                    "Y %": st.column_config.NumberColumn("Y %", min_value=0.0, max_value=100.0, step=0.5),
-                    "Font Size": st.column_config.NumberColumn("Font Size", min_value=6.0, max_value=24.0, step=1.0),
-                    "Style": st.column_config.SelectboxColumn(
-                        "Style",
-                        options=["Box", "Highlight Box", "Plain Text"],
-                    ),
-                    "Box Width": st.column_config.NumberColumn("Box Width", min_value=40.0, max_value=700.0, step=10.0),
-                    "Box Height": st.column_config.NumberColumn("Box Height", min_value=12.0, max_value=160.0, step=2.0),
-                },
-            )
-            st.session_state["tag_rows"] = tag_rows
-
-            cgen, cclear = st.columns([1, 1])
-            with cgen:
-                if st.button("Generate Tagged PDF", type="primary"):
+            action_left, action_middle, action_right = st.columns([1, 1, 1])
+            with action_left:
+                if st.button("Generate Tagged PDF", type="primary", disabled=not all_tag_rows):
                     try:
-                        tagged_bytes = stamp_pdf_with_tags(pdf_bytes, tag_rows.to_dict("records"))
-                        st.success("Tagged PDF created. Download it, then upload it in Generate Extraction.")
-                        st.download_button(
-                            "Download Tagged PDF",
-                            data=tagged_bytes,
-                            file_name=f"tagged_{tag_pdf.name}",
-                            mime="application/pdf",
-                        )
-                    except Exception as e:
-                        st.error(f"Unable to generate tagged PDF: {e}")
+                        tagged_bytes = stamp_pdf_with_tags(pdf_bytes, all_tag_rows)
+                        st.session_state[f"tagged_pdf_{file_id}"] = tagged_bytes
+                        st.success("Tagged PDF generated successfully.")
+                    except Exception as exc:
+                        st.error(f"Unable to generate tagged PDF: {exc}")
 
-            with cclear:
-                if st.button("Clear All Saved Tags"):
-                    st.session_state["tag_rows"] = pd.DataFrame(
-                        columns=["Page", "Tag Type", "Value", "Label Text", "X %", "Y %", "Font Size", "Style", "Box Width", "Box Height"]
+            with action_middle:
+                tagged_pdf = st.session_state.get(f"tagged_pdf_{file_id}")
+                if tagged_pdf:
+                    st.download_button(
+                        "Download Tagged PDF",
+                        data=tagged_pdf,
+                        file_name=f"tagged_{tag_pdf.name}",
+                        mime="application/pdf",
                     )
-                    st.rerun()
 
+            with action_right:
+                if st.button("Clear All PDF Tags"):
+                    st.session_state[clear_request_key] = True
+                    st.rerun()
     else:
-        st.info("Upload a PDF to start tagging.")
+        st.info("Upload a PDF only when tags are needed. Otherwise, use Generate Extraction directly.")
 
 with tab_extract:
     st.subheader("System Status")
@@ -497,7 +438,7 @@ with tab_extract:
 
                 edited_result = st.data_editor(
                     final_df,
-                    use_container_width=True,
+                    width="stretch",
                     num_rows="fixed",
                     column_config={
                         "Findings": st.column_config.SelectboxColumn(
@@ -528,7 +469,7 @@ with tab_extract:
 
             if processing_errors:
                 st.warning("Some PDF files were not processed.")
-                st.dataframe(pd.DataFrame(processing_errors), use_container_width=True)
+                st.dataframe(pd.DataFrame(processing_errors), width="stretch")
 
     else:
         st.info("Upload one or multiple audit report PDFs to start.")
