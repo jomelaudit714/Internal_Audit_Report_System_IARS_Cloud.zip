@@ -1,44 +1,41 @@
-# Internal Audit Report System (IARS) v2.3
+# Internal Audit Report System (IARS) v2.4
 
-This version starts from IARS v2.2 and corrects two PDF editor issues:
+## Main correction
 
-1. Textboxes and their text now remain saved when moving to another PDF page and returning.
-2. The textbox is tighter around the text, and resizing no longer pushes the label into another line.
+Version 2.4 fixes the deployment error that appeared after uploading a PDF or changing pages:
 
-## PDF editor workflow
+`Component 'iars_pdf_textbox_editor_v23' is not registered`
 
-1. Upload a PDF under **PDF Tagging Editor**.
-2. Right-click twice at nearly the same location to create a textbox.
-3. Click inside the box and type the tag.
-4. Drag the blue **move** tab to reposition the textbox.
-5. Drag any blue side or corner handle to resize it.
-6. Click **Fit text** to tighten the selected box around the label.
-7. Change PDF pages as needed. Existing boxes remain available when returning to a page.
-8. Generate and download the tagged PDF.
-9. Upload the tagged PDF under **Generate Extraction**.
+Streamlit resets the Components v2 registry during every script rerun, while imported Python modules remain cached. The previous version registered the editor only when `iars_pdf_editor.py` was first imported. Version 2.4 registers the editor safely during every app rerun before mounting it.
 
-## v2.3 persistence design
+## PDF textbox editor
 
-- One Components v2 state stores textbox data for every PDF page.
-- The component key stays the same when the page number changes.
-- A browser-local backup is updated while typing.
-- Clicking outside the box, pressing Enter, changing pages, dragging, or resizing synchronizes the editor state to Streamlit.
+- Double-right-click the same PDF location to add a textbox.
+- Click inside the textbox and type directly.
+- Drag the blue `move` strip to reposition the textbox.
+- Drag the side or corner handles to resize it.
+- Use `Fit text` to tighten the box around the text.
+- Text stays on one line and uses tight internal padding.
+- Textbox records are maintained for all PDF pages.
+- Generate and download a searchable tagged PDF.
 
-## v2.3 box and text improvements
+## Deployment
 
-- Text padding reduced to 1 px vertically and 3 px horizontally.
-- Text remains on one line instead of wrapping downward.
-- Font size automatically decreases when a box is made narrower or shorter.
-- The default textbox is smaller and closer to the text.
-- **Fit text** automatically adjusts the box to the selected label.
-- Generated PDF tags use tight padding, vertical centering, and automatic font fitting.
+Upload all files and folders from this package to the root of the GitHub repository:
 
-## Main files
+- `app.py`
+- `iars_parser.py`
+- `iars_pdf_editor.py`
+- `requirements.txt`
+- `packages.txt`
+- `data/Master_Data.xlsx`
 
-- `app.py` - Streamlit application and tagged-PDF generation
-- `iars_parser.py` - existing extraction and classification rules
-- `iars_pdf_editor.py` - Components v2 PDF textbox editor
-- `data/Master_Data.xlsx` - current Master Data supplied by the user
-- `requirements.txt` - Python dependencies
-- `packages.txt` - OCR system dependency
-- `TEST_RESULTS.md` - verification record for this release
+Replace the older files rather than mixing versions. After Streamlit redeploys, press `Ctrl + F5` once.
+
+## Master Data
+
+The included `data/Master_Data.xlsx` is an unchanged copy of the uploaded `Master_Data(2).xlsx`.
+
+## Tested environment
+
+The dependency versions in `requirements.txt` are pinned to the Streamlit Cloud environment used for testing, including Streamlit 1.58.0.

@@ -215,7 +215,7 @@ def build_default_tag_rows(page_count: int = 1):
 
 
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.3")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.4")
 
 with st.sidebar:
     st.header("Master Data")
@@ -283,8 +283,8 @@ with tab_editor:
         if page_count:
             reset_key = f"pdf_editor_reset_{file_id}"
             reset_version = int(st.session_state.get(reset_key, 0))
-            component_key = f"iars_pdf_editor_{file_id}_v23_reset_{reset_version}"
-            storage_key = f"iars_pdf_editor_{file_id}_v23_reset_{reset_version}"
+            component_key = f"iars_pdf_editor_{file_id}_v24_reset_{reset_version}"
+            storage_key = f"iars_pdf_editor_{file_id}_v24_reset_{reset_version}"
 
             controls_left, controls_right = st.columns([1, 2])
             with controls_left:

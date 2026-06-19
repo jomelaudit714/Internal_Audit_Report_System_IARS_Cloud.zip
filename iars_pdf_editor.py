@@ -1,4 +1,4 @@
-"""IARS PDF textbox editor v2.3.
+"""IARS PDF textbox editor v2.4.
 
 Fixes in this version:
 - one persistent component state for all PDF pages
@@ -6,6 +6,7 @@ Fixes in this version:
 - tighter text padding and single-line labels
 - automatic font fitting after typing/resizing
 - Fit text toolbar action
+- component registration repeated safely on every Streamlit rerun
 """
 from __future__ import annotations
 
@@ -806,13 +807,21 @@ export default function(component) {
 """
 
 
-_PDF_EDITOR_COMPONENT = st.components.v2.component(
-    name="iars_pdf_textbox_editor_v23",
-    html=EDITOR_HTML,
-    css=EDITOR_CSS,
-    js=EDITOR_JS,
-    isolate_styles=True,
-)
+def _register_pdf_editor_component():
+    """Register the Components v2 editor during every Streamlit script run.
+
+    Streamlit rebuilds its component registry on each rerun, while imported Python
+    modules remain cached. A module-level registration therefore exists only on
+    the first run and causes "Component ... is not registered" after an upload
+    or page change. Registering here keeps the component available on every run.
+    """
+    return st.components.v2.component(
+        name="iars_pdf_textbox_editor_v24",
+        html=EDITOR_HTML,
+        css=EDITOR_CSS,
+        js=EDITOR_JS,
+        isolate_styles=True,
+    )
 
 
 def _read_editor_state(component_state: Any, default: dict[str, Any]) -> dict[str, Any]:
@@ -842,7 +851,9 @@ def pdf_textbox_editor(
     }
     current_editor = _read_editor_state(st.session_state.get(key), initial_editor)
 
-    return _PDF_EDITOR_COMPONENT(
+    component = _register_pdf_editor_component()
+
+    return component(
         data={
             "image_data": image_data,
             "editor": current_editor,

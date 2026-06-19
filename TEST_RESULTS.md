@@ -1,74 +1,75 @@
-# IARS v2.3 Test Results
+# IARS v2.4 Test Results
 
-Date tested: June 19, 2026
+Test date: June 19, 2026
 
-## 1. Python and Streamlit checks
+## Error reproduced and corrected
 
-- `app.py` compiled successfully.
-- `iars_parser.py` compiled successfully.
-- `iars_pdf_editor.py` compiled successfully.
-- Streamlit 1.58 `AppTest` completed with zero application exceptions.
-- Both application tabs loaded:
-  - Generate Extraction
-  - PDF Tagging Editor
-- A local Streamlit 1.58 server started successfully and passed its health endpoint.
+The Version 2.3 failure was reproduced during an actual Streamlit AppTest rerun after uploading a PDF:
 
-## 2. Frontend editor browser tests
+`ValueError: Component 'iars_pdf_textbox_editor_v23' is not registered`
 
-The exact v2.3 HTML, CSS, and JavaScript were mounted in headless Chromium with a browser test harness.
+Root cause: the Components v2 editor was registered only during the first module import. Streamlit rebuilt its component registry on the next script rerun, but Python did not re-import the cached module.
+
+Correction: Version 2.4 registers `iars_pdf_textbox_editor_v24` during every script run immediately before mounting it.
+
+## Streamlit rerun tests
+
+Passed without application exceptions:
+
+1. Initial app load.
+2. Upload a five-page PDF.
+3. Mount the editor on Page 1.
+4. Change to Page 2 and rerun.
+5. Return to Page 1 and rerun.
+6. Perform an additional unchanged rerun.
+
+This directly tests the deployment path that failed in Version 2.3.
+
+## Chromium editor interaction tests
+
+An actual headless Chromium browser was used with the editor frontend in an isolated harness.
 
 Passed:
 
 - double-right-click creates one textbox
-- click inside the box accepts typing
-- text is written to the browser-local backup during typing
-- clicking outside synchronizes text to the component state
-- page 1 text remains after switching to page 2 and returning to page 1
-- page 2 text remains stored at the same time as page 1 text
-- `Fit text` reduced a test textbox from approximately 24 px high to 18 px high
-- text CSS remained `white-space: nowrap`
-- one all-page state contained both page 1 and page 2 textbox records
-- JavaScript syntax check passed with Node.js 22
+- click and type `Task ID: 001`
+- text commits to the editor state
+- Page 1 -> Page 2 -> Page 1 retains the encoded text
+- internal text padding is `1px 3px`
+- text uses `white-space: nowrap`
+- `Fit text` produced an approximately 18-pixel-high textbox
+- drag reposition works
+- southeast-handle resize works
+- no JavaScript page errors
 
-Tested text values:
+## PDF output tests
 
-- Page 1: `Task ID: 001`
-- Page 2: `Auditor: Sarina Amuraw`
-
-## 3. Tagged PDF generation
-
-A four-page scanned audit report was tagged on pages 1 and 2.
+A two-page PDF was generated and tagged with different text on each page.
 
 Passed:
 
-- generated PDF opened successfully
-- page count remained four
-- `Task ID: 001` was machine-readable
-- `Auditor: Sarina Amuraw` was machine-readable
-- tag borders rendered correctly
-- text was vertically centered with close padding
-- labels stayed on one line
-- all pages rendered successfully at 160 DPI
+- Page 1 contains searchable `Task ID: 001`
+- Page 2 contains searchable `Auditor: Sarina Amuraw`
+- both pages rendered successfully to PNG
+- no clipped or overlapping tag text was observed
 
-## 4. Parser regression tests
+## Parser regression tests
 
-The unchanged parser and current Master Data were tested against:
+Nonempty extraction results were generated for:
 
-- 2026IAD013 - Angelica Cuevas: 5 extracted rows
-- 2026IAD209 - Michelle Mesa: 3 extracted rows
-- 2026IAD215 - Jennel Kate Fortin: 6 extracted rows
-- CamScanner 06-17-2026 23.10: 8 extracted rows
+- 2026IAD013 - Angelica Cuevas: 5 rows
+- 2026IAD209 - Michelle Mesa: 3 rows
+- 2026IAD215 - Jennel Kate Fortin: 6 rows
+- CamScanner 06-17-2026 23.10: 8 rows
 
-All four reports produced nonempty outputs.
+## Master Data verification
 
-## 5. Master Data verification
-
-`data/Master_Data.xlsx` is byte-for-byte identical to the uploaded `Master_Data(2).xlsx`.
-
-SHA-256:
+SHA-256 of uploaded `Master_Data(2).xlsx`:
 
 `b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
 
-## Deployment note
+The included `data/Master_Data.xlsx` has the same SHA-256 hash.
 
-After replacing the GitHub files, allow Streamlit Cloud to redeploy and use Ctrl+F5 once so the browser loads the v2.3 component name and current JavaScript.
+## Limitation
+
+These tests cover the exact reproduced rerun error, repeated Streamlit mounting, frontend interaction logic, generated PDF output, and parser regressions. Final acceptance still requires one live check after GitHub and Streamlit Cloud redeployment because browser policies, deployment caching, or future platform changes are outside the ZIP itself.

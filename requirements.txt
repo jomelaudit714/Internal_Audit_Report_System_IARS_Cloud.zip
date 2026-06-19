@@ -1,7 +1,7 @@
-streamlit>=1.58,<2.0
-pandas>=2.2,<4
-openpyxl>=3.1,<4
-pdfplumber>=0.11,<1
-PyMuPDF>=1.26,<2
-Pillow>=11,<13
-pytesseract>=0.3.13,<1
+streamlit==1.58.0
+pandas==3.0.3
+openpyxl==3.1.5
+pdfplumber==0.11.10
+PyMuPDF==1.27.2.3
+Pillow==12.2.0
+pytesseract==0.3.13
