@@ -564,72 +564,129 @@ def find_issue_title_entries(lines):
     return entries
 
 
-def _is_activity_header(upper):
-    return upper.strip().rstrip(":") in [
-        "REVOLVING FUND COUNT",
-        "PETTY CASH FUND",
-        "PETTY CASH FUND COUNT",
-        "CASH ADVANCES COUNT",
-        "CASH ADVANCE COUNT",
-        "DAILY SALES COUNT",
-        "CASH SALES COUNT",
-        "COLLECTION COUNT",
-        "CHANGE FUND COUNT",
-    ]
+def _normalize_activity_heading(value):
+    """Normalize an audit activity/category heading for exact comparison."""
+    value = clean_text(value).upper().replace("&", " AND ")
+    value = re.sub(r"[^A-Z0-9]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    # COUNT is only a report/activity descriptor, not part of the issue itself.
+    value = re.sub(r"\s+COUNT$", "", value).strip()
+    return value
+
+
+_ACTIVITY_HEADINGS = {
+    "REVOLVING FUND",
+    "PETTY CASH",
+    "PETTY CASH FUND",
+    "REVOLVING AND PETTY CASH FUND",
+    "CASH ADVANCE",
+    "CASH ADVANCES",
+    "DAILY SALES",
+    "CASH SALES",
+    "SALES AND COLLECTION",
+    "CASH SALES AND COLLECTION",
+    "COLLECTION",
+    "CHANGE FUND",
+    "DELIVERY FUND",
+    "CASH COUNT",
+    "STOCK COUNT",
+    "INVENTORY COUNT",
+}
+
+
+def _is_activity_header(value):
+    """Return True only for an audit activity/category, never for a true issue title.
+
+    Examples intentionally excluded from Issue Detail Issue:
+    REVOLVING FUND, PETTY CASH FUND, CASH ADVANCES, SALES AND COLLECTION.
+    """
+    return _normalize_activity_heading(value) in _ACTIVITY_HEADINGS
 
 
 def _is_generic_other(upper):
-    return upper.strip().rstrip(":") in ["OTHER ISSUE", "OTHER ISSUES"]
+    return clean_text(upper).upper().strip().rstrip(":") in ["OTHER ISSUE", "OTHER ISSUES"]
 
 
-def _is_activity_header(upper):
-    return upper.strip().rstrip(":") in [
-        "REVOLVING FUND COUNT",
-        "PETTY CASH FUND",
-        "PETTY CASH FUND COUNT",
-        "CASH ADVANCES COUNT",
-        "CASH ADVANCE COUNT",
-        "DAILY SALES COUNT",
-        "CASH SALES COUNT",
-        "COLLECTION COUNT",
-        "CHANGE FUND COUNT",
-    ]
+_CONTEXT_TAG_LABEL = re.compile(
+    r"\b(?:AUDITEE|AUDITOR|TASK\s*ID|FREQUENCY(?:\s*RATE)?|REACTION)\s*:",
+    re.I,
+)
 
 
-def _is_generic_other(upper):
-    return upper.strip().rstrip(":") in ["OTHER ISSUE", "OTHER ISSUES"]
+def _has_true_issue_marker(value):
+    upper = clean_text(value).upper()
+    return bool(
+        any(k in upper for k in PRIORITY_TITLES)
+        or any(k in upper for k in TITLE_KEYWORDS)
+        or "UNACCOUNTED CASH" in upper
+        or "MINIMAL CASH OVERAGE" in upper
+        or "MINIMAL CASH SHORTAGE" in upper
+        or "SKIPPED AND MISSING PCV" in upper
+        or "NO PRE-PRINTED SERIES" in upper
+    )
+
+
+def _clean_title_candidate_line(value):
+    """Remove typed carry-forward tags from a possible issue-title line.
+
+    PDF table extraction can merge editor tags into the title, for example:
+    ``CASH OVERAGE - P10,996.31 Frequency Rate: 2nd Time``.
+    The true issue portion is retained while the tag portion is removed.
+    """
+    value = clean_text(value)
+    if not value:
+        return ""
+
+    matches = list(_CONTEXT_TAG_LABEL.finditer(value))
+    if not matches:
+        return value
+
+    # Most merged tag lines place the true issue/activity before the first tag.
+    prefix = clean_text(value[:matches[0].start()])
+    if prefix:
+        return prefix
+
+    # Defensive fallback: if a true issue appears after the final tag label/value,
+    # normalize_title() can cut directly from the recognized issue phrase.
+    suffix = clean_text(value[matches[-1].end():])
+    if _has_true_issue_marker(suffix):
+        return normalize_title(suffix)
+
+    return ""
 
 
 def split_finding_cell(finding_cell):
-    """Split table finding cell into actual issue title and narrative."""
-    lines = [
+    """Split table finding cell into the true issue title and its narrative.
+
+    Audit activity headings such as ``REVOLVING FUND`` are context only and must
+    never be returned as Issue Detail Issue. The next valid issue title is used.
+    """
+    raw_lines = [
         clean_text(x)
         for x in str(finding_cell or "").replace("\r", "\n").split("\n")
         if clean_text(x)
     ]
 
-    if not lines:
+    if not raw_lines:
         return "", ""
+
+    # Keep the same indexes as raw_lines, but remove editor tags for title logic.
+    lines = [_clean_title_candidate_line(x) for x in raw_lines]
 
     title_index = None
     title_parts = []
     narrative_start = 0
 
     for i, line in enumerate(lines):
+        if not line:
+            continue
+
         upper = line.upper().strip().rstrip(":")
 
         if _is_activity_header(upper) or _is_generic_other(upper):
             continue
 
-        is_real_title = (
-            any(k in upper for k in PRIORITY_TITLES)
-            or any(k in upper for k in TITLE_KEYWORDS)
-            or "UNACCOUNTED CASH" in upper
-            or "MINIMAL CASH OVERAGE" in upper
-            or "MINIMAL CASH SHORTAGE" in upper
-            or "SKIPPED AND MISSING PCV" in upper
-            or "NO PRE-PRINTED SERIES" in upper
-        )
+        is_real_title = _has_true_issue_marker(line)
 
         if is_real_title and upper_ratio(line) >= 0.70 and len(line) <= 230:
             title_index = i
@@ -638,6 +695,10 @@ def split_finding_cell(finding_cell):
 
             while j < len(lines):
                 nxt = lines[j]
+                if not nxt:
+                    j += 1
+                    continue
+
                 nxt_upper = nxt.upper().strip().rstrip(":")
                 if _is_activity_header(nxt_upper) or _is_generic_other(nxt_upper):
                     j += 1
@@ -646,14 +707,7 @@ def split_finding_cell(finding_cell):
                 nxt_is_title_cont = (
                     upper_ratio(nxt) >= 0.70
                     and len(nxt) <= 230
-                    and (
-                        any(k in nxt_upper for k in PRIORITY_TITLES)
-                        or any(k in nxt_upper for k in TITLE_KEYWORDS)
-                        or "UNACCOUNTED CASH" in nxt_upper
-                        or "NO CASH SHORTAGE/OVERAGE" in nxt_upper
-                        or "NO CASH SHORTAGE" in nxt_upper
-                        or "NO CASH OVERAGE" in nxt_upper
-                    )
+                    and _has_true_issue_marker(nxt)
                 )
                 if nxt_is_title_cont:
                     title_parts.append(nxt.rstrip(":"))
@@ -664,16 +718,19 @@ def split_finding_cell(finding_cell):
             break
 
     if title_index is None:
-        # Do not capture OTHER ISSUE. If no real title is found, infer if possible; otherwise skip.
-        if lines and _is_generic_other(lines[0].upper().strip().rstrip(":")):
-            narrative = "\n".join(lines[1:])
+        # Do not capture OTHER ISSUE. If no real title is found, infer if possible.
+        first_nonblank = next((x for x in lines if x), "")
+        if first_nonblank and _is_generic_other(first_nonblank.upper().strip().rstrip(":")):
+            narrative = "\n".join(raw_lines[1:])
             inferred = infer_issue_title_from_narrative("OTHER ISSUE", narrative)
             if not _is_generic_other(inferred.upper()):
                 return enhance_issue_title_details(inferred, narrative), narrative
             return "", ""
 
-        # Fallback only for non-activity and non-other lines.
+        # Fallback only for lines that are neither activity headings nor tag-only lines.
         for i, line in enumerate(lines):
+            if not line:
+                continue
             upper = line.upper().strip().rstrip(":")
             if not _is_activity_header(upper) and not _is_generic_other(upper):
                 title_index = i
@@ -685,10 +742,10 @@ def split_finding_cell(finding_cell):
         return "", ""
 
     raw_title = normalize_title(" ".join(title_parts))
-    if _is_activity_header(raw_title.upper()) or _is_generic_other(raw_title.upper()):
+    if not raw_title or _is_activity_header(raw_title) or _is_generic_other(raw_title):
         return "", ""
 
-    narrative = "\n".join(lines[narrative_start:])
+    narrative = "\n".join(raw_lines[narrative_start:])
     issue_title = infer_issue_title_from_narrative(raw_title, narrative)
     issue_title = enhance_issue_title_details(issue_title, narrative)
 

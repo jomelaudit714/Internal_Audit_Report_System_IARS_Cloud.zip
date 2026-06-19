@@ -1,75 +1,83 @@
-# IARS v2.4 Test Results
+# IARS v2.5 Test Results
 
 Test date: June 19, 2026
 
-## Error reproduced and corrected
+## Report 2026IAD222 reproduction test
 
-The Version 2.3 failure was reproduced during an actual Streamlit AppTest rerun after uploading a PDF:
+The uploaded tagged PDF was processed with the Version 2.4 parser before the correction. The first row incorrectly returned:
 
-`ValueError: Component 'iars_pdf_textbox_editor_v23' is not registered`
+- Issue Detail Issue: `REVOLVING FUND`
+- Finding Category: `Ignore or Disregard Office/Operation Best Practices -3`
 
-Root cause: the Components v2 editor was registered only during the first module import. Streamlit rebuilt its component registry on the next script rerun, but Python did not re-import the cached module.
+After the Version 2.5 correction, the same PDF returns:
 
-Correction: Version 2.4 registers `iars_pdf_textbox_editor_v24` during every script run immediately before mounting it.
+- Issue Detail Issue: `CASH OVERAGE – P10,996.31`
+- Finding Category: `Cash/Fund/Collection Overage (₱1,000.00 and above) -4`
 
-## Streamlit rerun tests
+The parser also retained the expected Task ID `001`, auditor `Patricia Anne S. Del Rosario`, auditee match, and `2nd Time` frequency.
 
-Passed without application exceptions:
+## Repeated deterministic test
 
-1. Initial app load.
-2. Upload a five-page PDF.
-3. Mount the editor on Page 1.
-4. Change to Page 2 and rerun.
-5. Return to Page 1 and rerun.
-6. Perform an additional unchanged rerun.
-
-This directly tests the deployment path that failed in Version 2.3.
-
-## Chromium editor interaction tests
-
-An actual headless Chromium browser was used with the editor frontend in an isolated harness.
+The complete 2026IAD222 extraction was run five consecutive times.
 
 Passed:
 
-- double-right-click creates one textbox
-- click and type `Task ID: 001`
-- text commits to the editor state
-- Page 1 -> Page 2 -> Page 1 retains the encoded text
-- internal text padding is `1px 3px`
-- text uses `white-space: nowrap`
-- `Fit text` produced an approximately 18-pixel-high textbox
-- drag reposition works
-- southeast-handle resize works
-- no JavaScript page errors
+- identical output hash on all five runs
+- identical seven extracted rows on all five runs
+- first issue remained `CASH OVERAGE – P10,996.31`
+- no audit activity heading appeared in Issue Detail Issue
 
-## PDF output tests
-
-A two-page PDF was generated and tagged with different text on each page.
+## Synthetic title-selection tests
 
 Passed:
 
-- Page 1 contains searchable `Task ID: 001`
-- Page 2 contains searchable `Auditor: Sarina Amuraw`
-- both pages rendered successfully to PNG
-- no clipped or overlapping tag text was observed
+- `REVOLVING FUND` followed by `CASH OVERAGE – P10,996.31` -> captures `CASH OVERAGE – P10,996.31`
+- `PETTY CASH FUND` followed by `NO CASH SHORTAGE/OVERAGE` -> captures `NO CASH SHORTAGE/OVERAGE`
+- `SALES AND COLLECTION` with merged tags followed by `CASH SHORTAGE: (P3,274.00)` -> captures the cash shortage
+- `REVOLVING FUND COUNT` followed by `INCOMPLETE DETAILS IN PCV` -> captures the PCV issue
+- `MIXING OF PETTY CASH AND REVOLVING FUND` remains a valid true issue and is not discarded
 
-## Parser regression tests
+## Searchable PDF regression tests
 
-Nonempty extraction results were generated for:
+Nonempty extraction results and valid issue titles were confirmed for:
 
-- 2026IAD013 - Angelica Cuevas: 5 rows
 - 2026IAD209 - Michelle Mesa: 3 rows
+- 2026IAD211 - Mia Montejo: 1 row
+- 2026IAD212 - Mirz Dula-ugon: 1 row
+- 2026IAD214 - Jennifer Cabintoy: 1 row
 - 2026IAD215 - Jennel Kate Fortin: 6 rows
-- CamScanner 06-17-2026 23.10: 8 rows
+- 2026IAD220 - Jugine Corpuz: 4 rows
+- 2026IAD221 - Timothy So: 1 row
+- 2026IAD013 - Angelica Cuevas: 5 rows
+
+No extracted Issue Detail Issue matched an activity heading.
+
+## OCR/scanned PDF regression tests
+
+Passed:
+
+- EMERITO.pdf: 8 rows
+- CamScanner 06-17-2026 23.10.pdf: 8 rows
+
+The existing handwritten Task ID, auditor, auditee, frequency, and reaction carry-forward logic remained operational.
+
+## Code verification
+
+Passed:
+
+- `app.py` Python compilation
+- `iars_parser.py` Python compilation
+- `iars_pdf_editor.py` Python compilation
+- exact uploaded Master Data SHA-256 match
 
 ## Master Data verification
 
-SHA-256 of uploaded `Master_Data(2).xlsx`:
+SHA-256 of the included `data/Master_Data.xlsx`:
 
 `b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
 
-The included `data/Master_Data.xlsx` has the same SHA-256 hash.
+This matches the uploaded `Master_Data(2).xlsx` exactly.
 
-## Limitation
+## Deployment note
 
-These tests cover the exact reproduced rerun error, repeated Streamlit mounting, frontend interaction logic, generated PDF output, and parser regressions. Final acceptance still requires one live check after GitHub and Streamlit Cloud redeployment because browser policies, deployment caching, or future platform changes are outside the ZIP itself.
+The parser and source code were tested locally against the uploaded report and the regression files. The live Streamlit Cloud environment should still be checked once after GitHub redeployment because platform caching and browser behavior are external to the ZIP.

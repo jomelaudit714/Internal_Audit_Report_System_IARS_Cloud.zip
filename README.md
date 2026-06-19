@@ -1,22 +1,41 @@
-# Internal Audit Report System (IARS) v2.4
+# Internal Audit Report System (IARS) v2.5
 
-## Main correction
+## Main parser correction
 
-Version 2.4 fixes the deployment error that appeared after uploading a PDF or changing pages:
+Version 2.5 corrects Issue Detail Issue selection when an audit activity heading appears above the actual finding.
 
-`Component 'iars_pdf_textbox_editor_v23' is not registered`
+The following are treated only as audit activity/context headings and are never captured as the issue title:
 
-Streamlit resets the Components v2 registry during every script rerun, while imported Python modules remain cached. The previous version registered the editor only when `iars_pdf_editor.py` was first imported. Version 2.4 registers the editor safely during every app rerun before mounting it.
+- `REVOLVING FUND`
+- `PETTY CASH FUND`
+- `CASH ADVANCE` / `CASH ADVANCES`
+- `SALES AND COLLECTION`
+- `CASH SALES AND COLLECTION`
+- `CHANGE FUND`
+- `DELIVERY FUND`
+- similar headings ending in `COUNT`
+
+The parser now skips those headings and captures the next true issue title. It also removes merged PDF editor tags such as `Auditee:`, `Auditor:`, `Task ID:`, `Frequency Rate:`, and `Reaction:` from title detection.
+
+### Confirmed example
+
+For Report `2026IAD222`, the first finding is now extracted as:
+
+- **Issue Detail Issue:** `CASH OVERAGE – P10,996.31`
+- **Finding Category:** `Cash/Fund/Collection Overage (₱1,000.00 and above) -4`
+
+It no longer captures `REVOLVING FUND` as the issue.
 
 ## PDF textbox editor
+
+The Version 2.4 component-registration, page persistence, direct typing, drag repositioning, resizing, and tight textbox spacing fixes are retained.
 
 - Double-right-click the same PDF location to add a textbox.
 - Click inside the textbox and type directly.
 - Drag the blue `move` strip to reposition the textbox.
 - Drag the side or corner handles to resize it.
 - Use `Fit text` to tighten the box around the text.
-- Text stays on one line and uses tight internal padding.
-- Textbox records are maintained for all PDF pages.
+- Textbox records are maintained across PDF pages.
 - Generate and download a searchable tagged PDF.
 
 ## Deployment
@@ -30,12 +49,12 @@ Upload all files and folders from this package to the root of the GitHub reposit
 - `packages.txt`
 - `data/Master_Data.xlsx`
 
-Replace the older files rather than mixing versions. After Streamlit redeploys, press `Ctrl + F5` once.
+Replace the older files instead of mixing versions. After Streamlit finishes redeploying, press `Ctrl + F5` once.
 
 ## Master Data
 
-The included `data/Master_Data.xlsx` is an unchanged copy of the uploaded `Master_Data(2).xlsx`.
+The included `data/Master_Data.xlsx` is unchanged from the uploaded `Master_Data(2).xlsx`.
 
 ## Tested environment
 
-The dependency versions in `requirements.txt` are pinned to the Streamlit Cloud environment used for testing, including Streamlit 1.58.0.
+The dependency versions remain pinned in `requirements.txt`, including Streamlit 1.58.0 for Streamlit Cloud deployment.

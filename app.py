@@ -215,7 +215,7 @@ def build_default_tag_rows(page_count: int = 1):
 
 
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.4")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.5")
 
 with st.sidebar:
     st.header("Master Data")
