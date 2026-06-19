@@ -1,4 +1,4 @@
-"""Smooth PDF textbox editor for IARS using Streamlit Components v2.
+"""IARS PDF textbox editor v2.2 using Streamlit Components v2.
 
 The component is implemented with native browser pointer events, so dragging and
 resizing happen entirely in the frontend and do not rerun Streamlit until the
@@ -340,11 +340,17 @@ export default function(component) {
     viewport.scrollLeft = 0;
   }
 
-  function selectBox(id, rerender = true) {
-    selectedId = id;
+  function refreshSelectionStyles() {
+    layer.querySelectorAll('.tag-box').forEach((element) => {
+      element.classList.toggle('selected', element.dataset.boxId === selectedId);
+    });
     deleteButton.disabled = !selectedId;
     duplicateButton.disabled = !selectedId;
-    if (rerender) renderBoxes();
+  }
+
+  function selectBox(id) {
+    selectedId = id;
+    refreshSelectionStyles();
   }
 
   function showContextHint(clientX, clientY, message) {
@@ -415,11 +421,19 @@ export default function(component) {
       textElement.className = 'tag-text';
       textElement.contentEditable = 'true';
       textElement.spellcheck = false;
+      textElement.tabIndex = 0;
       textElement.style.fontSize = `${box.font_size ?? 11}px`;
       textElement.innerText = box.text ?? '';
       textElement.addEventListener('pointerdown', (event) => {
+        // Do not rebuild the box DOM here. Replacing the contenteditable element
+        // during pointerdown prevents the browser from placing the caret.
         event.stopPropagation();
         selectBox(box.id);
+      });
+      textElement.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectBox(box.id);
+        textElement.focus({ preventScroll: true });
       });
       textElement.addEventListener('focus', () => selectBox(box.id));
       textElement.addEventListener('input', () => {
@@ -460,8 +474,7 @@ export default function(component) {
 
       layer.appendChild(boxElement);
     });
-    deleteButton.disabled = !selectedId;
-    duplicateButton.disabled = !selectedId;
+    refreshSelectionStyles();
   }
 
   function startDrag(event, id) {
@@ -591,8 +604,9 @@ export default function(component) {
   }
 
   function handleKeydown(event) {
-    const active = document.activeElement;
-    const editing = active?.classList?.contains('tag-text');
+    const editing = event.composedPath().some(
+      (node) => node?.classList?.contains?.('tag-text')
+    );
     if (!editing && (event.key === 'Delete' || event.key === 'Backspace')) {
       event.preventDefault();
       deleteSelected();
@@ -645,7 +659,7 @@ export default function(component) {
 
 
 _PDF_EDITOR_COMPONENT = st.components.v2.component(
-    name="iars_pdf_textbox_editor",
+    name="iars_pdf_textbox_editor_v22",
     html=EDITOR_HTML,
     css=EDITOR_CSS,
     js=EDITOR_JS,
