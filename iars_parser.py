@@ -1335,17 +1335,93 @@ def detect_reaction(issue, narrative, recommendation):
     return "Do Some Adjustment"
 
 
+def normalize_frequency_label(value):
+    """Normalize typed/OCR frequency labels to the exact IARS dropdown values."""
+    raw = clean_text(value)
+    if not raw:
+        return ""
+
+    text = raw.lower().replace("–", "-").replace("—", "-")
+    text = re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+    if text in ["not applicable", "n a", "na"]:
+        return "Not Applicable"
+
+    ordinal_map = {
+        "1": "First Time", "1st": "First Time", "first": "First Time",
+        "2": "Second Time", "2nd": "Second Time", "second": "Second Time",
+        "3": "Third Time", "3rd": "Third Time", "third": "Third Time",
+        "4": "Fourth Time", "4th": "Fourth Time", "fourth": "Fourth Time",
+        "5": "Fifth Time", "5th": "Fifth Time", "fifth": "Fifth Time",
+        "6": "Sixth Time", "6th": "Sixth Time", "sixth": "Sixth Time",
+        "7": "Seventh Time", "7th": "Seventh Time", "seventh": "Seventh Time",
+    }
+
+    tokens = text.split()
+    for token in tokens:
+        if token in ordinal_map:
+            return ordinal_map[token]
+
+    compact = text.replace(" ", "")
+    for token, canonical in ordinal_map.items():
+        if compact in [f"{token}time", token]:
+            return canonical
+
+    # Preserve an already-canonical value when possible.
+    for option in FREQUENCY_OPTIONS:
+        if clean_text(option).lower() == raw.lower():
+            return option
+
+    return raw
+
+
+def is_repeat_frequency(value):
+    return normalize_frequency_label(value) in {
+        "Second Time", "Third Time", "Fourth Time", "Fifth Time",
+        "Sixth Time", "Seventh Time",
+    }
+
+
 def detect_frequency(issue, narrative, recommendation):
-    text = f"{issue} {narrative} {recommendation}".lower()
-    prior_count = 0
-    prior_count += len(re.findall(r"previous audit", text))
-    prior_count += len(re.findall(r"previously noted", text))
-    prior_count += len(re.findall(r"same finding was noted", text))
-    prior_count += len(re.findall(r"reference no\.", text))
-    prior_count += len(re.findall(r"\b20\d{2}iad\d+\b", text))
-    if prior_count <= 0:
-        return "First Time"
-    return ["Second Time", "Third Time", "Fourth Time", "Fifth Time", "Sixth Time", "Seventh Time"][min(prior_count - 1, 5)]
+    text = clean_text(f"{issue} {narrative} {recommendation}")
+
+    # Explicit issue-level tag has priority, e.g. Frequency Rate: 2nd Time.
+    explicit = re.search(
+        r"\bFrequency(?:\s+Rate)?\s*[:;\-]\s*"
+        r"((?:1st|2nd|3rd|4th|5th|6th|7th|first|second|third|fourth|fifth|sixth|seventh)\s+time|not\s+applicable)",
+        text,
+        re.I,
+    )
+    if explicit:
+        normalized = normalize_frequency_label(explicit.group(1))
+        if normalized:
+            return normalized
+
+    # Also accept a clear standalone occurrence statement in the issue text.
+    occurrence = re.search(
+        r"\b(1st|2nd|3rd|4th|5th|6th|7th|first|second|third|fourth|fifth|sixth|seventh)\s+time\b",
+        text,
+        re.I,
+    )
+    if occurrence:
+        normalized = normalize_frequency_label(occurrence.group(0))
+        if normalized:
+            return normalized
+
+    lower = text.lower()
+    prior_markers = [
+        r"same finding was noted",
+        r"same finding",
+        r"previous audit",
+        r"previously noted",
+        r"noted in the previous audit",
+        r"reference\s+no\.",
+        r"\b20\d{2}iad\d+\b",
+    ]
+    if any(re.search(pattern, lower, re.I) for pattern in prior_markers):
+        return "Second Time"
+
+    return "First Time"
 
 
 def parse_score(findings):
@@ -1624,20 +1700,21 @@ def extract_inline_tag(line, tag):
     return ""
 
 
-def extract_context_tags(text, master_df=None, auditors_df=None):
-    """Extract carry-forward handwritten/typed context tags from OCR/plain text.
+def extract_context_tags(text, master_df=None, auditors_df=None, rows=None):
+    """Extract handwritten/typed context tags from OCR/plain text.
 
-    Tags recognized:
-    - Auditee:
-    - Auditor:
-    - Task ID:
-    - Frequency Rate:
-    - Reaction:
+    Carry-forward tags:
+    - Auditee
+    - Auditor
+    - Task ID
 
-    A tag applies to all succeeding issue numbers until a new tag appears.
+    Issue-specific tags (never carried to the next issue):
+    - Frequency Rate / Frequency
+    - Reaction
     """
     contexts = {}
-    current = {
+
+    persistent = {
         "auditee_raw": "",
         "auditee_id": "",
         "auditee_name": "",
@@ -1645,19 +1722,45 @@ def extract_context_tags(text, master_df=None, auditors_df=None):
         "auditor": "",
         "auditor_user": "",
         "task_id": "",
-        "frequency": "",
-        "reaction": "",
     }
 
     lines = [clean_text(x) for x in (text or "").splitlines() if clean_text(x)]
     current_issue = None
 
+    # PDF text order can place a typed tag and issue title before the issue number.
+    # Match extracted issue titles back to their issue numbers so the tag is still
+    # attached to the correct issue.
+    title_targets = []
+    for row in rows or []:
+        issue_no = clean_text(row.get("issue_no", ""))
+        title_norm = normalize_for_match(row.get("issue", ""))
+        if issue_no and len(title_norm) >= 8:
+            title_targets.append((issue_no, title_norm))
+
+    def issue_context(issue_no):
+        base = persistent.copy()
+        base.update({"frequency": "", "reaction": ""})
+        existing = contexts.get(issue_no, {})
+        base.update(existing)
+        contexts[issue_no] = base
+        return contexts[issue_no]
+
     for line in lines:
+        line_norm = normalize_for_match(line)
+
+        # A tagged issue title can appear before its printed issue number in the
+        # PDF extraction order. Use the title to establish the current issue.
+        for title_issue_no, title_norm in title_targets:
+            if title_norm and title_norm in line_norm:
+                current_issue = title_issue_no
+                issue_context(current_issue)
+                break
+
         # Detect issue number at line start or standalone.
         m_issue = re.match(r"^\s*(\d{1,2})\s*[\.\)]\s*(.*)", line)
         if m_issue:
             current_issue = m_issue.group(1)
-            contexts.setdefault(current_issue, current.copy())
+            issue_context(current_issue)
 
         auditee_val = extract_inline_tag(line, "Auditee")
         auditor_val = extract_inline_tag(line, "Auditor")
@@ -1665,54 +1768,75 @@ def extract_context_tags(text, master_df=None, auditors_df=None):
         freq_val = extract_inline_tag(line, "Frequency Rate") or extract_inline_tag(line, "Frequency")
         react_val = extract_inline_tag(line, "Reaction")
 
-        # Also tolerate OCR/handwritten variants.
-        # Accept: TASK ID: 001, TASK ID. 001, TASK ID 001, TASK 1D. 001, TASKID 001
+        # Also tolerate OCR/handwritten Task ID variants.
         if not task_val:
             m = re.search(r"\bTA(?:S)?K\s*(?:ID|1D|I[Dd])\s*[\.:;\-]?\s*([A-Za-z0-9\-]+)", line, re.I)
             if m:
                 task_val = clean_text(m.group(1))
 
         if auditee_val:
-            current["auditee_raw"] = auditee_val
+            persistent["auditee_raw"] = auditee_val
             emp_id, emp_name = canonical_employee_name(master_df, auditee_val)
-            current["auditee_id"] = emp_id
-            current["auditee_name"] = emp_name
+            persistent["auditee_id"] = emp_id
+            persistent["auditee_name"] = emp_name
 
         if auditor_val:
-            current["auditor_raw"] = auditor_val
+            persistent["auditor_raw"] = auditor_val
             auditor, user = canonical_auditor_name(auditors_df, auditor_val)
-            current["auditor"] = auditor
-            current["auditor_user"] = user
+            persistent["auditor"] = auditor
+            persistent["auditor_user"] = user
 
         if task_val:
-            current["task_id"] = clean_text(task_val)
-
-        if freq_val:
-            current["frequency"] = clean_text(freq_val)
-
-        if react_val:
-            current["reaction"] = clean_text(react_val)
+            persistent["task_id"] = clean_text(task_val)
 
         if current_issue:
-            contexts[current_issue] = current.copy()
+            ctx = issue_context(current_issue)
+            # Refresh only carry-forward fields for the current issue.
+            for key, value in persistent.items():
+                if value:
+                    ctx[key] = value
+
+            # Frequency and reaction belong only to the current issue.
+            if freq_val:
+                ctx["frequency"] = normalize_frequency_label(freq_val)
+            if react_val:
+                ctx["reaction"] = clean_text(react_val)
 
     return contexts
 
 
 def apply_carry_forward_context(rows, text, master_df=None, auditors_df=None):
-    """Apply handwritten/typed context tags to extracted rows by issue number."""
-    contexts = extract_context_tags(text, master_df, auditors_df)
+    """Apply context tags to extracted rows.
+
+    Auditee, Auditor and Task ID carry forward. Frequency and Reaction are
+    issue-specific and are never copied to a succeeding issue.
+    """
+    contexts = extract_context_tags(text, master_df, auditors_df, rows=rows)
     if not contexts:
         return rows
 
-    last_context = {}
+    persistent_last = {}
     updated = []
 
     for row in rows:
         issue_no = clean_text(row.get("issue_no", ""))
-        ctx = contexts.get(issue_no) or last_context
-        if contexts.get(issue_no):
-            last_context = contexts.get(issue_no)
+        exact = contexts.get(issue_no, {})
+
+        # Carry only the persistent identity/task fields.
+        for key in [
+            "auditee_raw", "auditee_id", "auditee_name",
+            "auditor_raw", "auditor", "auditor_user", "task_id",
+        ]:
+            if exact.get(key):
+                persistent_last[key] = exact.get(key)
+
+        ctx = persistent_last.copy()
+
+        # Explicit issue-level frequency/reaction are applied only to this row.
+        if exact.get("frequency"):
+            ctx["frequency"] = normalize_frequency_label(exact.get("frequency"))
+        if exact.get("reaction"):
+            ctx["reaction"] = exact.get("reaction")
 
         if ctx:
             if ctx.get("auditee_name"):
@@ -1723,15 +1847,14 @@ def apply_carry_forward_context(rows, text, master_df=None, auditors_df=None):
                 row["auditor_user_override"] = ctx.get("auditor_user")
             if ctx.get("task_id"):
                 row["task_id_override"] = ctx.get("task_id")
-            if ctx.get("frequency"):
-                row["frequency_override"] = ctx.get("frequency")
-            if ctx.get("reaction"):
-                row["reaction_override"] = ctx.get("reaction")
+            if exact.get("frequency"):
+                row["frequency_override"] = normalize_frequency_label(exact.get("frequency"))
+            if exact.get("reaction"):
+                row["reaction_override"] = clean_text(exact.get("reaction"))
 
         updated.append(row)
 
     return updated
-
 
 def _ocr_title_from_line(line):
     """Return normalized title when an OCR line appears to be an audit finding title."""
@@ -2499,13 +2622,13 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
         if item.get("reaction_override"):
             reaction = clean_text(item.get("reaction_override", "")) or reaction
         if item.get("frequency_override"):
-            frequency = clean_text(item.get("frequency_override", "")) or frequency
+            frequency = normalize_frequency_label(item.get("frequency_override", "")) or frequency
 
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
             auditor = clean_text(manual.get("Auditor", "")) or auditor
             reaction = clean_text(manual.get("Reaction", "")) or reaction
-            frequency = clean_text(manual.get("Frequency", "")) or frequency
+            frequency = normalize_frequency_label(manual.get("Frequency", "")) or frequency
 
         if clean_text(item.get("auditee_name_override", "")):
             row_emp_id = clean_text(item.get("auditee_id_override", "")) or "None"
@@ -2527,6 +2650,10 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
         )
 
         score = parse_score(findings)
+
+        frequency = normalize_frequency_label(frequency) or "First Time"
+        if is_repeat_frequency(frequency):
+            reaction = "Performed SAME offense"
 
         if "No Findings" in findings or "Immaterial Findings" in findings:
             reaction = "Maintaining Status Quo"
@@ -2587,16 +2714,19 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
         if item.get("reaction_override"):
             reaction = clean_text(item.get("reaction_override", "")) or reaction
         if item.get("frequency_override"):
-            frequency = clean_text(item.get("frequency_override", "")) or frequency
+            frequency = normalize_frequency_label(item.get("frequency_override", "")) or frequency
 
         if manual is not None:
             task_id = clean_text(manual.get("Task ID", "")) or task_id
             auditor = clean_text(manual.get("Auditor", "")) or auditor
             reaction = clean_text(manual.get("Reaction", "")) or reaction
-            frequency = clean_text(manual.get("Frequency", "")) or frequency
+            frequency = normalize_frequency_label(manual.get("Frequency", "")) or frequency
 
         findings = classify_finding(item["issue"], item["recommendation1"], item["narrative"], header.get("company", ""), header.get("audit_title", ""))
         score = parse_score(findings)
+        frequency = normalize_frequency_label(frequency) or "First Time"
+        if is_repeat_frequency(frequency):
+            reaction = "Performed SAME offense"
         if "No Findings" in findings or "Immaterial Findings" in findings:
             reaction = "Maintaining Status Quo"
             frequency = "Not Applicable"

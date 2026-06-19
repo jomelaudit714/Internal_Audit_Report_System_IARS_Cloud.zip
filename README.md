@@ -1,51 +1,60 @@
-# Internal Audit Report System (IARS) v2.6
+# Internal Audit Report System (IARS) v2.7
 
-## Main parser corrections
+## Main correction
 
-### 1. Cause statements now populate Explanation
+Version 2.7 fixes Frequency and Reaction evaluation.
 
-When an issue narrative contains any of the following phrases, IARS captures the words immediately after the phrase as the Explanation:
+### Frequency is issue-specific
 
-- `The overage occurred because ...`
-- `The shortage occurred because ...`
-- `The discrepancy occurred because ...`
-- `The overage/shortage/discrepancy occurred due to ...`
-- `This occurred due to ...`
-- `This occured due to ...` (common misspelling also supported)
+`Frequency Rate:` and `Frequency:` tags apply only to the issue where the tag is placed. They do not carry forward to the following issue.
 
-The cause statement is prioritized before the existing auditee-explanation patterns.
+The following tags still carry forward until replaced:
 
-### 2. INCOMPLETE DETAILS IN PCV combines missing fields without duplicates
+- Auditee
+- Auditor
+- Task ID
 
-The parser now applies this rule:
+### Frequency normalization
 
-- If the title is only `INCOMPLETE DETAILS IN PCV`, collect all specific incomplete fields stated in the narrative.
-- If the title already includes one or more fields, preserve those fields and add only other fields stated in the narrative.
-- Do not repeat fields already present in the title.
+The parser normalizes ordinal tags to the IARS dropdown values:
 
-Example:
+- `1st Time` / `First Time` -> `First Time`
+- `2nd Time` / `Second Time` -> `Second Time`
+- `3rd Time` / `Third Time` -> `Third Time`
+- through `Seventh Time`
 
-- Existing title: `INCOMPLETE DETAILS IN PCV - PAYEE`
-- Narrative: `... incomplete details, particularly in the payee and amount fields.`
-- Final title: `INCOMPLETE DETAILS IN PCV - PAYEE, AMOUNT`
+### Reaction for repeated findings
 
-### 3. Cross-page finding continuation
+When Frequency is `Second Time` or higher, Reaction is evaluated as:
 
-A finding narrative that continues at the top of the next report page without repeating the issue number is appended to the preceding finding. Exhibit pages are excluded. This allows cause statements such as `This occurred due to ...` on the next page to be captured correctly.
+`Performed SAME offense`
 
-## Preserved functionality
+It is no longer evaluated as `Do Some Adjustment`.
 
-- PDF textbox editor from Version 2.5
-- Double-right-click textbox creation
-- Direct typing, drag repositioning, and drag resizing
-- PDF page-state persistence
-- True issue-title selection instead of activity headings
-- Existing extraction, OCR, tagging, scoring, and classification rules
-- Existing `data/Master_Data.xlsx`
+### Existing previous-audit rule
+
+When no explicit frequency tag is present but the issue states that the same finding was noted in a previous audit, the issue is evaluated as:
+
+- Frequency: `Second Time`
+- Reaction: `Performed SAME offense`
+
+## Verified 2026IAD222 result
+
+- Issue 1 - `CASH OVERAGE - P10,996.31`: Second Time / Performed SAME offense
+- Issues 2 to 4: First Time / Do Some Adjustment
+- Issue 5 - `INCOMPLETE RECEIPT INFORMATION`: Second Time / Performed SAME offense
+- Issues 6 and 7: First Time / Do Some Adjustment
+
+## Preserved corrections
+
+- True issue title is captured instead of activity headings such as Revolving Fund.
+- Explanation captures cause statements after overage/shortage/discrepancy phrases.
+- Incomplete PCV details are combined without duplication, e.g. `PAYEE, AMOUNT`.
+- The PDF textbox editor remains unchanged.
 
 ## Deployment
 
-Replace all repository files with the contents of this ZIP:
+Upload and replace all files in the repository root:
 
 - `app.py`
 - `iars_parser.py`
@@ -54,4 +63,8 @@ Replace all repository files with the contents of this ZIP:
 - `packages.txt`
 - `data/Master_Data.xlsx`
 
-After Streamlit finishes redeploying, press `Ctrl + F5` once.
+Do not mix files from older ZIP versions. After Streamlit redeploys, press `Ctrl + F5` once.
+
+## Master Data
+
+The included `data/Master_Data.xlsx` is unchanged from the uploaded `Master_Data(2).xlsx`.
