@@ -98,13 +98,13 @@ def draw_preview_box(img, x_percent, y_percent, box_width_px=220, box_height_px=
 
 
 def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
-    """Insert typed PDF editor tags using percentage-based coordinates."""
+    """Insert single-line PDF tags with tight padding and automatic font fitting."""
     import fitz
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     for row in tag_rows:
-        label_text = str(row.get("Label Text", "") or "").strip()
+        label_text = " ".join(str(row.get("Label Text", "") or "").split())
         if not label_text:
             continue
 
@@ -114,7 +114,7 @@ def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
             y_percent = float(row.get("Y %", 12))
             width_percent = float(row.get("Width %", 30))
             height_percent = float(row.get("Height %", 6))
-            font_size = float(row.get("Font Size", 11))
+            requested_font_size = float(row.get("Font Size", 11))
             style = str(row.get("Style", "Box") or "Box")
         except (TypeError, ValueError):
             continue
@@ -125,38 +125,36 @@ def stamp_pdf_with_tags(pdf_bytes: bytes, tag_rows):
         page = doc.load_page(page_index)
         x0 = max(0, min(100, x_percent)) / 100 * page.rect.width
         y0 = max(0, min(100, y_percent)) / 100 * page.rect.height
-        width = max(2, min(100, width_percent)) / 100 * page.rect.width
-        height = max(1, min(100, height_percent)) / 100 * page.rect.height
+        width = max(1, min(100, width_percent)) / 100 * page.rect.width
+        height = max(0.5, min(100, height_percent)) / 100 * page.rect.height
         x1 = min(page.rect.width, x0 + width)
         y1 = min(page.rect.height, y0 + height)
         rect = fitz.Rect(x0, y0, x1, y1)
 
         if style == "Highlight Box":
-            page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 0.65), width=0.8)
+            page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 0.65), width=0.7)
         elif style == "Box":
-            page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 1), width=0.8)
+            page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 1), width=0.7)
 
-        text_rect = fitz.Rect(rect.x0 + 4, rect.y0 + 3, rect.x1 - 4, rect.y1 - 3)
-        remaining = page.insert_textbox(
-            text_rect,
+        horizontal_padding = min(2.0, max(0.7, rect.width * 0.02))
+        vertical_padding = min(1.2, max(0.4, rect.height * 0.08))
+        available_width = max(1.0, rect.width - (horizontal_padding * 2))
+        available_height = max(1.0, rect.height - (vertical_padding * 2))
+
+        font_size = min(requested_font_size, max(4.5, available_height * 0.78))
+        text_width = fitz.get_text_length(label_text, fontname="helv", fontsize=font_size)
+        if text_width > available_width and text_width > 0:
+            font_size = max(4.5, font_size * (available_width / text_width))
+
+        # Vertically center the one-line tag inside the rectangle.
+        baseline = rect.y0 + ((rect.height - font_size) / 2) + (font_size * 0.82)
+        page.insert_text(
+            fitz.Point(rect.x0 + horizontal_padding, baseline),
             label_text,
             fontsize=font_size,
             fontname="helv",
             color=(0, 0, 0),
-            align=fitz.TEXT_ALIGN_LEFT,
         )
-
-        # If the user's box is too small, retry with a slightly smaller font so
-        # the essential tag remains visible and machine-readable.
-        if remaining < 0 and font_size > 7:
-            page.insert_textbox(
-                text_rect,
-                label_text,
-                fontsize=max(7, font_size - 2),
-                fontname="helv",
-                color=(0, 0, 0),
-                align=fitz.TEXT_ALIGN_LEFT,
-            )
 
     output = BytesIO()
     doc.save(output, garbage=4, deflate=True)
@@ -179,12 +177,14 @@ def editor_file_id(file_name: str, pdf_bytes: bytes) -> str:
 
 
 def component_editor_value(state):
-    """Read a Components v2 state value from dict-like or result objects."""
+    """Read the persistent Components v2 editor state."""
     if state is None:
-        return {"boxes": [], "selected_id": None}
+        return {"pages": {}, "selected_id": None, "active_page": 1, "updated_at": 0}
     if isinstance(state, dict):
-        return state.get("editor", {"boxes": [], "selected_id": None})
-    return getattr(state, "editor", {"boxes": [], "selected_id": None})
+        value = state.get("editor", {})
+    else:
+        value = getattr(state, "editor", {})
+    return value if isinstance(value, dict) else {"pages": {}}
 
 
 def normalize_tag_text(tag_type: str, value: str):
@@ -215,7 +215,7 @@ def build_default_tag_rows(page_count: int = 1):
 
 
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.2")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.3")
 
 with st.sidebar:
     st.header("Master Data")
@@ -257,7 +257,8 @@ with tab_editor:
     st.subheader("PDF Tagging Editor")
     st.caption(
         "Double-right-click the PDF to add a textbox. Click inside to type, "
-        "drag the top strip to reposition, and drag the blue handles to resize."
+        "drag the move tab to reposition, and drag the blue handles to resize. "
+        "Tags are preserved when switching PDF pages."
     )
 
     tag_pdf = st.file_uploader(
@@ -280,12 +281,10 @@ with tab_editor:
             page_count = 0
 
         if page_count:
-            clear_request_key = f"clear_pdf_editor_request_{file_id}"
-            if st.session_state.pop(clear_request_key, False):
-                for state_key in list(st.session_state.keys()):
-                    if state_key.startswith(f"iars_pdf_editor_{file_id}_page_"):
-                        del st.session_state[state_key]
-                st.session_state.pop(f"tagged_pdf_{file_id}", None)
+            reset_key = f"pdf_editor_reset_{file_id}"
+            reset_version = int(st.session_state.get(reset_key, 0))
+            component_key = f"iars_pdf_editor_{file_id}_v23_reset_{reset_version}"
+            storage_key = f"iars_pdf_editor_{file_id}_v23_reset_{reset_version}"
 
             controls_left, controls_right = st.columns([1, 2])
             with controls_left:
@@ -299,8 +298,8 @@ with tab_editor:
                 )
             with controls_right:
                 st.info(
-                    "First right-click marks the location; right-click the same spot again "
-                    "to create the textbox. The browser menu is suppressed inside the PDF."
+                    "The first right-click marks the location. Right-click the same spot again "
+                    "to create a textbox. Use Fit text for the tightest box around the label."
                 )
 
             preview_img, page_width, page_height = render_pdf_page(
@@ -311,47 +310,57 @@ with tab_editor:
 
             if preview_img is None:
                 st.error("Unable to render this PDF page.")
+                current_editor = component_editor_value(st.session_state.get(component_key))
             else:
-                component_key = f"iars_pdf_editor_{file_id}_page_{int(preview_page)}"
-                current_state = st.session_state.get(component_key, {})
-                initial_editor = component_editor_value(current_state)
-                initial_boxes = initial_editor.get("boxes", [])
-
                 editor_result = pdf_textbox_editor(
                     image_data=image_to_data_uri(preview_img),
-                    initial_boxes=initial_boxes,
+                    page_number=int(preview_page),
+                    storage_key=storage_key,
                     key=component_key,
                     height=940,
                 )
 
                 current_editor = component_editor_value(editor_result)
-                boxes = current_editor.get("boxes", [])
+                pages = current_editor.get("pages", {})
+                boxes = pages.get(str(int(preview_page)), []) if isinstance(pages, dict) else []
                 nonempty_boxes = [box for box in boxes if str(box.get("text", "")).strip()]
                 st.caption(
                     f"Page {int(preview_page)}: {len(boxes)} textbox(es), "
                     f"{len(nonempty_boxes)} containing text."
                 )
 
+            # Read the complete all-page state from the single persistent component.
+            if not current_editor.get("pages"):
+                current_editor = component_editor_value(st.session_state.get(component_key))
+            all_pages = current_editor.get("pages", {}) if isinstance(current_editor, dict) else {}
+
             all_tag_rows = []
-            for page_number in range(1, page_count + 1):
-                page_key = f"iars_pdf_editor_{file_id}_page_{page_number}"
-                page_editor = component_editor_value(st.session_state.get(page_key, {}))
-                for box in page_editor.get("boxes", []):
-                    label_text = str(box.get("text", "") or "").strip()
-                    if not label_text:
+            if isinstance(all_pages, dict):
+                for page_number_text, page_boxes in all_pages.items():
+                    try:
+                        page_number = int(page_number_text)
+                    except (TypeError, ValueError):
                         continue
-                    all_tag_rows.append(
-                        {
-                            "Page": page_number,
-                            "Label Text": label_text,
-                            "X %": float(box.get("x_pct", 0)),
-                            "Y %": float(box.get("y_pct", 0)),
-                            "Width %": float(box.get("w_pct", 30)),
-                            "Height %": float(box.get("h_pct", 6)),
-                            "Font Size": float(box.get("font_size", 11)),
-                            "Style": str(box.get("style", "Box")),
-                        }
-                    )
+                    if page_number < 1 or page_number > page_count or not isinstance(page_boxes, list):
+                        continue
+                    for box in page_boxes:
+                        label_text = " ".join(str(box.get("text", "") or "").split())
+                        if not label_text:
+                            continue
+                        all_tag_rows.append(
+                            {
+                                "Page": page_number,
+                                "Label Text": label_text,
+                                "X %": float(box.get("x_pct", 0)),
+                                "Y %": float(box.get("y_pct", 0)),
+                                "Width %": float(box.get("w_pct", 30)),
+                                "Height %": float(box.get("h_pct", 6)),
+                                "Font Size": float(box.get("font_size", 11)),
+                                "Style": str(box.get("style", "Box")),
+                            }
+                        )
+
+            all_tag_rows.sort(key=lambda row: (row["Page"], row["Y %"], row["X %"]))
 
             if all_tag_rows:
                 with st.expander(f"Review saved textbox data ({len(all_tag_rows)})"):
@@ -381,7 +390,9 @@ with tab_editor:
 
             with action_right:
                 if st.button("Clear All PDF Tags"):
-                    st.session_state[clear_request_key] = True
+                    st.session_state[reset_key] = reset_version + 1
+                    st.session_state.pop(component_key, None)
+                    st.session_state.pop(f"tagged_pdf_{file_id}", None)
                     st.rerun()
     else:
         st.info("Upload a PDF only when tags are needed. Otherwise, use Generate Extraction directly.")

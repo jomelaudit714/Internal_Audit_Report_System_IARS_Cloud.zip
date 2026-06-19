@@ -1,8 +1,11 @@
-"""IARS PDF textbox editor v2.2 using Streamlit Components v2.
+"""IARS PDF textbox editor v2.3.
 
-The component is implemented with native browser pointer events, so dragging and
-resizing happen entirely in the frontend and do not rerun Streamlit until the
-interaction is completed.
+Fixes in this version:
+- one persistent component state for all PDF pages
+- browser-local backup while typing, so page changes cannot discard text
+- tighter text padding and single-line labels
+- automatic font fitting after typing/resizing
+- Fit text toolbar action
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ EDITOR_HTML = r"""
       <button type="button" id="zoom-fit" title="Fit width">Fit width</button>
     </div>
     <div class="toolbar-group">
+      <button type="button" id="fit-text" disabled>Fit text</button>
       <button type="button" id="duplicate-box" disabled>Duplicate</button>
       <button type="button" id="delete-box" class="danger" disabled>Delete</button>
       <button type="button" id="clear-page" class="danger-light">Clear page</button>
@@ -166,22 +170,22 @@ button.danger-light {
 .tag-box {
   position: absolute;
   box-sizing: border-box;
-  min-width: 64px;
-  min-height: 28px;
-  border: 2px solid #111827;
-  background: rgba(255, 255, 255, 0.94);
+  min-width: 34px;
+  min-height: 16px;
+  border: 1px solid #111827;
+  background: rgba(255, 255, 255, 0.96);
   color: #111827;
   z-index: 3;
 }
 
 .tag-box.selected {
   outline: 2px dashed #2563eb;
-  outline-offset: 3px;
+  outline-offset: 2px;
   z-index: 5;
 }
 
 .tag-box.highlight {
-  background: rgba(254, 249, 195, 0.94);
+  background: rgba(254, 249, 195, 0.96);
 }
 
 .tag-box.plain {
@@ -191,46 +195,54 @@ button.danger-light {
 
 .drag-strip {
   position: absolute;
-  left: 0;
-  top: 0;
-  right: 0;
-  height: 15px;
+  left: -1px;
+  top: -18px;
+  width: 48px;
+  height: 16px;
+  box-sizing: border-box;
+  border-radius: 4px 4px 0 0;
   cursor: move;
-  background: transparent;
-  z-index: 2;
-}
-
-.tag-box.selected .drag-strip::after {
-  content: "⋮⋮ move";
-  position: absolute;
-  top: -20px;
-  left: -2px;
-  padding: 1px 5px;
-  border-radius: 4px;
   background: #2563eb;
   color: #ffffff;
-  font-size: 10px;
-  line-height: 15px;
-  white-space: nowrap;
-  pointer-events: none;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  z-index: 12;
+  user-select: none;
+}
+
+.tag-box.selected .drag-strip {
+  display: flex;
+}
+
+.drag-strip::after {
+  content: "move";
 }
 
 .tag-text {
   position: absolute;
   inset: 0;
   box-sizing: border-box;
-  padding: 15px 7px 5px 7px;
-  overflow: auto;
+  padding: 1px 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
   outline: none;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
   user-select: text;
   cursor: text;
-  line-height: 1.18;
+  line-height: 1.05;
+  scrollbar-width: none;
+}
+
+.tag-text::-webkit-scrollbar {
+  display: none;
 }
 
 .tag-text:empty::before {
-  content: "Click here and type, e.g. Task ID: 001";
+  content: "Type here";
   color: #6b7280;
   font-style: italic;
   pointer-events: none;
@@ -238,27 +250,27 @@ button.danger-light {
 
 .resize-handle {
   position: absolute;
-  width: 11px;
-  height: 11px;
+  width: 9px;
+  height: 9px;
   box-sizing: border-box;
   border: 1px solid #ffffff;
   background: #2563eb;
   display: none;
-  z-index: 10;
+  z-index: 14;
 }
 
 .tag-box.selected .resize-handle {
   display: block;
 }
 
-.resize-handle[data-dir="nw"] { left: -7px; top: -7px; cursor: nwse-resize; }
-.resize-handle[data-dir="n"]  { left: calc(50% - 5px); top: -7px; cursor: ns-resize; }
-.resize-handle[data-dir="ne"] { right: -7px; top: -7px; cursor: nesw-resize; }
-.resize-handle[data-dir="e"]  { right: -7px; top: calc(50% - 5px); cursor: ew-resize; }
-.resize-handle[data-dir="se"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
-.resize-handle[data-dir="s"]  { left: calc(50% - 5px); bottom: -7px; cursor: ns-resize; }
-.resize-handle[data-dir="sw"] { left: -7px; bottom: -7px; cursor: nesw-resize; }
-.resize-handle[data-dir="w"]  { left: -7px; top: calc(50% - 5px); cursor: ew-resize; }
+.resize-handle[data-dir="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+.resize-handle[data-dir="n"]  { left: calc(50% - 4px); top: -6px; cursor: ns-resize; }
+.resize-handle[data-dir="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+.resize-handle[data-dir="e"]  { right: -6px; top: calc(50% - 4px); cursor: ew-resize; }
+.resize-handle[data-dir="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.resize-handle[data-dir="s"]  { left: calc(50% - 4px); bottom: -6px; cursor: ns-resize; }
+.resize-handle[data-dir="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.resize-handle[data-dir="w"]  { left: -6px; top: calc(50% - 4px); cursor: ew-resize; }
 
 .context-hint {
   position: fixed;
@@ -284,6 +296,7 @@ export default function(component) {
   const layer = parentElement.querySelector('#box-layer');
   const status = parentElement.querySelector('#editor-status');
   const zoomLabel = parentElement.querySelector('#zoom-label');
+  const fitTextButton = parentElement.querySelector('#fit-text');
   const deleteButton = parentElement.querySelector('#delete-box');
   const duplicateButton = parentElement.querySelector('#duplicate-box');
   const clearButton = parentElement.querySelector('#clear-page');
@@ -291,17 +304,51 @@ export default function(component) {
   const zoomOutButton = parentElement.querySelector('#zoom-out');
   const zoomFitButton = parentElement.querySelector('#zoom-fit');
 
-  let editor = data?.editor ?? { boxes: [], selected_id: null };
-  let boxes = Array.isArray(editor.boxes) ? structuredClone(editor.boxes) : [];
-  let selectedId = editor.selected_id ?? null;
+  const pageNumber = Number(data?.page_number ?? 1);
+  const pageKey = String(pageNumber);
+  const storageKey = String(data?.storage_key ?? 'iars_pdf_editor_backup');
+  const pythonEditor = data?.editor ?? {};
+
+  function readLocalEditor() {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const localEditor = readLocalEditor();
+  const pythonUpdated = Number(pythonEditor?.updated_at ?? 0);
+  const localUpdated = Number(localEditor?.updated_at ?? 0);
+  let editor = localEditor && localUpdated > pythonUpdated ? localEditor : pythonEditor;
+
+  let pages = editor?.pages && typeof editor.pages === 'object'
+    ? structuredClone(editor.pages)
+    : {};
+
+  // Migration support for the v2.2 single-page state shape.
+  if (Array.isArray(editor?.boxes) && !Array.isArray(pages[pageKey])) {
+    pages[pageKey] = structuredClone(editor.boxes);
+  }
+
+  let boxes = Array.isArray(pages[pageKey]) ? structuredClone(pages[pageKey]) : [];
+  let selectedId = Number(editor?.active_page ?? pageNumber) === pageNumber
+    ? (editor?.selected_id ?? null)
+    : null;
   let zoom = Number(data?.zoom ?? 1);
   let operation = null;
   let lastRightClick = { time: 0, x: 0, y: 0 };
   let contextHint = null;
+  let lastSnapshot = null;
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const makeId = () => `tag_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const currentBox = () => boxes.find((box) => box.id === selectedId) ?? null;
+
+  function normalizeText(value) {
+    return String(value ?? '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
 
   function normalizedBoxes() {
     return boxes.map((box) => ({
@@ -310,17 +357,38 @@ export default function(component) {
       y_pct: Number(box.y_pct),
       w_pct: Number(box.w_pct),
       h_pct: Number(box.h_pct),
-      text: String(box.text ?? ''),
+      text: normalizeText(box.text),
       style: String(box.style ?? 'Box'),
       font_size: Number(box.font_size ?? 11),
+      base_font_size: Number(box.base_font_size ?? 11),
     }));
   }
 
-  function commit() {
-    setStateValue('editor', {
-      boxes: normalizedBoxes(),
+  function snapshot() {
+    pages[pageKey] = normalizedBoxes();
+    lastSnapshot = {
+      pages: structuredClone(pages),
       selected_id: selectedId,
-    });
+      active_page: pageNumber,
+      updated_at: Date.now(),
+    };
+    return lastSnapshot;
+  }
+
+  function saveLocal() {
+    const value = snapshot();
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(value));
+    } catch (_) {
+      // Browser storage may be disabled; Streamlit state remains the fallback.
+    }
+    return value;
+  }
+
+  function commit(message = 'Saved.') {
+    const value = saveLocal();
+    setStateValue('editor', value);
+    setStatus(message);
   }
 
   function setStatus(message) {
@@ -344,8 +412,10 @@ export default function(component) {
     layer.querySelectorAll('.tag-box').forEach((element) => {
       element.classList.toggle('selected', element.dataset.boxId === selectedId);
     });
-    deleteButton.disabled = !selectedId;
-    duplicateButton.disabled = !selectedId;
+    const disabled = !selectedId;
+    deleteButton.disabled = disabled;
+    duplicateButton.disabled = disabled;
+    fitTextButton.disabled = disabled;
   }
 
   function selectBox(id) {
@@ -369,30 +439,74 @@ export default function(component) {
     }, 800);
   }
 
+  function fitFontToBox(box) {
+    if (!box || !stage.getBoundingClientRect().width) return;
+    const stageRect = stage.getBoundingClientRect();
+    const text = normalizeText(box.text);
+    const baseSize = Number(box.base_font_size ?? 11);
+    const availableWidth = Math.max(1, (box.w_pct / 100) * stageRect.width - 6);
+    const availableHeight = Math.max(1, (box.h_pct / 100) * stageRect.height - 2);
+    let size = Math.min(baseSize, Math.max(6, availableHeight * 0.78));
+
+    if (text) {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.font = `${size}px Arial, sans-serif`;
+        const measured = Math.max(1, ctx.measureText(text).width);
+        if (measured > availableWidth) {
+          size = Math.max(6, size * (availableWidth / measured));
+        }
+      }
+    }
+    box.font_size = Math.round(size * 10) / 10;
+  }
+
+  function fitSelectedToText() {
+    const box = currentBox();
+    if (!box) return;
+    const stageRect = stage.getBoundingClientRect();
+    const element = layer.querySelector(`[data-box-id="${box.id}"]`);
+    const textElement = element?.querySelector('.tag-text');
+    if (!stageRect.width || !stageRect.height || !textElement) return;
+
+    const baseSize = Number(box.base_font_size ?? 11);
+    textElement.style.fontSize = `${baseSize}px`;
+    const desiredWidthPx = clamp(textElement.scrollWidth + 8, 34, stageRect.width * 0.75);
+    const desiredHeightPx = clamp(Math.max(baseSize + 6, 18), 16, 40);
+    box.w_pct = Math.min((desiredWidthPx / stageRect.width) * 100, 100 - box.x_pct);
+    box.h_pct = Math.min((desiredHeightPx / stageRect.height) * 100, 100 - box.y_pct);
+    fitFontToBox(box);
+    renderBoxes();
+    commit('Textbox fitted closely to its text.');
+  }
+
   function createBoxAt(clientX, clientY) {
     const rect = stage.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const xPct = clamp(((clientX - rect.left) / rect.width) * 100, 0, 92);
-    const yPct = clamp(((clientY - rect.top) / rect.height) * 100, 0, 94);
+    const xPct = clamp(((clientX - rect.left) / rect.width) * 100, 0, 96);
+    const yPct = clamp(((clientY - rect.top) / rect.height) * 100, 0, 97);
+    const defaultWidthPct = clamp((180 / rect.width) * 100, 15, 28);
+    const defaultHeightPct = clamp((24 / rect.height) * 100, 1.6, 3.4);
     const box = {
       id: makeId(),
       x_pct: xPct,
       y_pct: yPct,
-      w_pct: Math.min(32, 98 - xPct),
-      h_pct: Math.min(7, 98 - yPct),
+      w_pct: Math.min(defaultWidthPct, 99 - xPct),
+      h_pct: Math.min(defaultHeightPct, 99 - yPct),
       text: '',
       style: 'Box',
       font_size: 11,
+      base_font_size: 11,
     };
     boxes.push(box);
     selectedId = box.id;
     renderBoxes();
-    commit();
+    commit('Textbox added and saved. Click inside to type.');
     window.setTimeout(() => {
       const text = layer.querySelector(`[data-box-id="${box.id}"] .tag-text`);
-      if (text) text.focus();
-    }, 40);
-    setStatus('Textbox added. Click inside to type; drag the top strip to move; drag blue handles to resize.');
+      if (text) text.focus({ preventScroll: true });
+    }, 50);
   }
 
   function boxStyleClass(style) {
@@ -404,6 +518,7 @@ export default function(component) {
   function renderBoxes() {
     layer.replaceChildren();
     boxes.forEach((box) => {
+      fitFontToBox(box);
       const boxElement = document.createElement('div');
       boxElement.className = `tag-box${box.id === selectedId ? ' selected' : ''}${boxStyleClass(box.style)}`;
       boxElement.dataset.boxId = box.id;
@@ -423,10 +538,8 @@ export default function(component) {
       textElement.spellcheck = false;
       textElement.tabIndex = 0;
       textElement.style.fontSize = `${box.font_size ?? 11}px`;
-      textElement.innerText = box.text ?? '';
+      textElement.innerText = normalizeText(box.text);
       textElement.addEventListener('pointerdown', (event) => {
-        // Do not rebuild the box DOM here. Replacing the contenteditable element
-        // during pointerdown prevents the browser from placing the caret.
         event.stopPropagation();
         selectBox(box.id);
       });
@@ -438,15 +551,26 @@ export default function(component) {
       textElement.addEventListener('focus', () => selectBox(box.id));
       textElement.addEventListener('input', () => {
         box.text = textElement.innerText;
+        fitFontToBox(box);
+        textElement.style.fontSize = `${box.font_size}px`;
+        saveLocal();
+        setStatus('Typing saved locally. Click outside or change page to sync.');
+      });
+      textElement.addEventListener('paste', (event) => {
+        event.preventDefault();
+        const pasted = normalizeText(event.clipboardData?.getData('text/plain') ?? '');
+        document.execCommand('insertText', false, pasted);
       });
       textElement.addEventListener('blur', () => {
-        box.text = textElement.innerText.trim();
-        commit();
+        box.text = normalizeText(textElement.innerText);
+        textElement.innerText = box.text;
+        fitFontToBox(box);
+        commit('Text saved.');
       });
       textElement.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
+        if (event.key === 'Enter') {
           event.preventDefault();
-          box.text = textElement.innerText.trim();
+          box.text = normalizeText(textElement.innerText);
           textElement.blur();
         }
         if (event.key === 'Escape') {
@@ -455,9 +579,7 @@ export default function(component) {
       });
 
       boxElement.addEventListener('pointerdown', (event) => {
-        if (event.target === boxElement) {
-          selectBox(box.id);
-        }
+        if (event.target === boxElement) selectBox(box.id);
       });
 
       boxElement.appendChild(dragStrip);
@@ -522,8 +644,8 @@ export default function(component) {
       let y = start.y_pct;
       let w = start.w_pct;
       let h = start.h_pct;
-      const minW = Math.max(4, (64 / operation.stageWidth) * 100);
-      const minH = Math.max(2.5, (28 / operation.stageHeight) * 100);
+      const minW = Math.max(2.5, (34 / operation.stageWidth) * 100);
+      const minH = Math.max(1.2, (16 / operation.stageHeight) * 100);
 
       if (dir.includes('e')) w = clamp(start.w_pct + dxPct, minW, 100 - start.x_pct);
       if (dir.includes('s')) h = clamp(start.h_pct + dyPct, minH, 100 - start.y_pct);
@@ -539,6 +661,7 @@ export default function(component) {
       box.y_pct = y;
       box.w_pct = w;
       box.h_pct = h;
+      fitFontToBox(box);
     }
 
     const element = layer.querySelector(`[data-box-id="${box.id}"]`);
@@ -547,13 +670,16 @@ export default function(component) {
       element.style.top = `${box.y_pct}%`;
       element.style.width = `${box.w_pct}%`;
       element.style.height = `${box.h_pct}%`;
+      const textElement = element.querySelector('.tag-text');
+      if (textElement) textElement.style.fontSize = `${box.font_size}px`;
     }
   }
 
   function finishOperation() {
     if (!operation) return;
+    const finishedType = operation.type;
     operation = null;
-    commit();
+    commit(finishedType === 'resize' ? 'Textbox resized and saved.' : 'Textbox repositioned and saved.');
   }
 
   function deleteSelected() {
@@ -561,8 +687,7 @@ export default function(component) {
     boxes = boxes.filter((box) => box.id !== selectedId);
     selectedId = null;
     renderBoxes();
-    commit();
-    setStatus('Textbox deleted.');
+    commit('Textbox deleted.');
   }
 
   function duplicateSelected() {
@@ -575,8 +700,7 @@ export default function(component) {
     boxes.push(duplicate);
     selectedId = duplicate.id;
     renderBoxes();
-    commit();
-    setStatus('Textbox duplicated.');
+    commit('Textbox duplicated and saved.');
   }
 
   function clearPage() {
@@ -584,8 +708,27 @@ export default function(component) {
     boxes = [];
     selectedId = null;
     renderBoxes();
-    commit();
-    setStatus('All textboxes on this page were removed.');
+    commit('All textboxes on this page were removed.');
+  }
+
+  function flushFocusedText() {
+    const focused = layer.querySelector('.tag-text:focus');
+    if (!focused) return false;
+    const boxElement = focused.closest('.tag-box');
+    const box = boxes.find((item) => item.id === boxElement?.dataset?.boxId);
+    if (!box) return false;
+    box.text = normalizeText(focused.innerText);
+    focused.innerText = box.text;
+    fitFontToBox(box);
+    commit('Text saved before leaving the page.');
+    return true;
+  }
+
+  function handleDocumentPointerDown(event) {
+    const focused = layer.querySelector('.tag-text:focus');
+    if (!focused) return;
+    const path = event.composedPath?.() ?? [];
+    if (!path.includes(focused)) flushFocusedText();
   }
 
   function handleContextMenu(event) {
@@ -611,19 +754,20 @@ export default function(component) {
       event.preventDefault();
       deleteSelected();
     }
-    if (!editing && event.key === 'Escape') {
-      selectBox(null);
-    }
+    if (!editing && event.key === 'Escape') selectBox(null);
   }
 
   layer.addEventListener('contextmenu', handleContextMenu);
   layer.addEventListener('pointerdown', (event) => {
     if (event.target === layer) selectBox(null);
   });
+  document.addEventListener('pointerdown', handleDocumentPointerDown, true);
   window.addEventListener('pointermove', updateOperation);
   window.addEventListener('pointerup', finishOperation);
   window.addEventListener('pointercancel', finishOperation);
+  window.addEventListener('pagehide', flushFocusedText);
   window.addEventListener('keydown', handleKeydown);
+  fitTextButton.addEventListener('click', fitSelectedToText);
   deleteButton.addEventListener('click', deleteSelected);
   duplicateButton.addEventListener('click', duplicateSelected);
   clearButton.addEventListener('click', clearPage);
@@ -635,22 +779,26 @@ export default function(component) {
     stage.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
     setZoom(zoom);
     renderBoxes();
-    if (selectedId) {
-      window.setTimeout(() => {
-        const selectedText = layer.querySelector(`[data-box-id="${selectedId}"] .tag-text`);
-        if (selectedText && !selectedText.innerText.trim()) selectedText.focus();
-      }, 60);
-    }
   };
   image.src = data?.image_data ?? '';
-  setStatus(data?.status_text ?? 'Double-right-click the PDF to add a textbox.');
+  setStatus(`Page ${pageNumber}. Double-right-click the PDF to add a textbox.`);
   renderBoxes();
 
+  // If the browser-local copy is newer, immediately restore it to Streamlit.
+  if (localEditor && localUpdated > pythonUpdated) {
+    window.setTimeout(() => setStateValue('editor', snapshot()), 0);
+  } else {
+    saveLocal();
+  }
+
   return () => {
+    flushFocusedText();
     layer.removeEventListener('contextmenu', handleContextMenu);
+    document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
     window.removeEventListener('pointermove', updateOperation);
     window.removeEventListener('pointerup', finishOperation);
     window.removeEventListener('pointercancel', finishOperation);
+    window.removeEventListener('pagehide', flushFocusedText);
     window.removeEventListener('keydown', handleKeydown);
     if (contextHint) contextHint.remove();
   };
@@ -659,7 +807,7 @@ export default function(component) {
 
 
 _PDF_EDITOR_COMPONENT = st.components.v2.component(
-    name="iars_pdf_textbox_editor_v22",
+    name="iars_pdf_textbox_editor_v23",
     html=EDITOR_HTML,
     css=EDITOR_CSS,
     js=EDITOR_JS,
@@ -667,30 +815,40 @@ _PDF_EDITOR_COMPONENT = st.components.v2.component(
 )
 
 
+def _read_editor_state(component_state: Any, default: dict[str, Any]) -> dict[str, Any]:
+    if component_state is None:
+        return default
+    if isinstance(component_state, dict):
+        value = component_state.get("editor", default)
+    else:
+        value = getattr(component_state, "editor", default)
+    return value if isinstance(value, dict) else default
+
+
 def pdf_textbox_editor(
     *,
     image_data: str,
-    initial_boxes: list[dict[str, Any]] | None = None,
+    page_number: int,
+    storage_key: str,
     key: str,
     height: int = 920,
 ):
-    """Mount the editor and return the Streamlit component result."""
-    initial_editor = {
-        "boxes": initial_boxes or [],
+    """Mount one persistent editor instance for all pages of one PDF."""
+    initial_editor: dict[str, Any] = {
+        "pages": {},
         "selected_id": None,
+        "active_page": int(page_number),
+        "updated_at": 0,
     }
-    component_state = st.session_state.get(key, {})
-    try:
-        current_editor = component_state.get("editor", initial_editor)
-    except AttributeError:
-        current_editor = getattr(component_state, "editor", initial_editor)
+    current_editor = _read_editor_state(st.session_state.get(key), initial_editor)
 
     return _PDF_EDITOR_COMPONENT(
         data={
             "image_data": image_data,
             "editor": current_editor,
+            "page_number": int(page_number),
+            "storage_key": storage_key,
             "zoom": 1.0,
-            "status_text": "Double-right-click the PDF to add a textbox.",
         },
         default={"editor": current_editor},
         key=key,

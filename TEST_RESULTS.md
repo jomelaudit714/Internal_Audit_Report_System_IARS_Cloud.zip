@@ -1,63 +1,74 @@
-# IARS v2.2 Test Results
+# IARS v2.3 Test Results
 
-Test date: June 19, 2026
+Date tested: June 19, 2026
 
-## Defect corrected
+## 1. Python and Streamlit checks
 
-The v2.1 textbox was recreated during its own pointer-down/focus event. That destroyed the active contenteditable element before the browser could place the caret, causing the visible textbox to ignore typing.
+- `app.py` compiled successfully.
+- `iars_parser.py` compiled successfully.
+- `iars_pdf_editor.py` compiled successfully.
+- Streamlit 1.58 `AppTest` completed with zero application exceptions.
+- Both application tabs loaded:
+  - Generate Extraction
+  - PDF Tagging Editor
+- A local Streamlit 1.58 server started successfully and passed its health endpoint.
 
-The v2.2 editor changes selection styling without rebuilding the textbox DOM. It also explicitly focuses the contenteditable textbox after a click.
+## 2. Frontend editor browser tests
 
-## Verification completed
+The exact v2.3 HTML, CSS, and JavaScript were mounted in headless Chromium with a browser test harness.
 
-### 1. Browser interaction test - passed 3/3
+Passed:
 
-Automated in Chromium using the same HTML, CSS, and JavaScript included in `iars_pdf_editor.py`.
+- double-right-click creates one textbox
+- click inside the box accepts typing
+- text is written to the browser-local backup during typing
+- clicking outside synchronizes text to the component state
+- page 1 text remains after switching to page 2 and returning to page 1
+- page 2 text remains stored at the same time as page 1 text
+- `Fit text` reduced a test textbox from approximately 24 px high to 18 px high
+- text CSS remained `white-space: nowrap`
+- one all-page state contained both page 1 and page 2 textbox records
+- JavaScript syntax check passed with Node.js 22
 
-Each run verified:
+Tested text values:
 
-- double-right-click created one textbox;
-- clicking inside placed focus in the editable area;
-- keyboard input was accepted;
-- typed text remained in the textbox;
-- typed text was written to component state;
-- drag reposition changed X/Y coordinates;
-- southeast-handle resize changed width/height;
-- no JavaScript page errors occurred.
+- Page 1: `Task ID: 001`
+- Page 2: `Auditor: Sarina Amuraw`
 
-Test values: `Task ID: 001`, `Task ID: 002`, and `Task ID: 003`.
+## 3. Tagged PDF generation
 
-### 2. Static code tests - passed
+A four-page scanned audit report was tagged on pages 1 and 2.
 
-- `app.py` Python compilation
-- `iars_parser.py` Python compilation
-- `iars_pdf_editor.py` Python compilation
-- embedded editor JavaScript syntax validation through Node.js
+Passed:
 
-### 3. Parser regression - passed 4/4
+- generated PDF opened successfully
+- page count remained four
+- `Task ID: 001` was machine-readable
+- `Auditor: Sarina Amuraw` was machine-readable
+- tag borders rendered correctly
+- text was vertically centered with close padding
+- labels stayed on one line
+- all pages rendered successfully at 160 DPI
 
-The existing parser produced records without exceptions for:
+## 4. Parser regression tests
 
-- `2026IAD209_Michelle_Mesa(2).pdf`
-- `2026IAD220_Jugine_Corpuz.pdf`
-- `2026IAD221_Timothy_So(1).pdf`
-- `2026IAD013_ Angelica Cuevas.pdf`
+The unchanged parser and current Master Data were tested against:
 
-### 4. Tagged-PDF output test - passed
+- 2026IAD013 - Angelica Cuevas: 5 extracted rows
+- 2026IAD209 - Michelle Mesa: 3 extracted rows
+- 2026IAD215 - Jennel Kate Fortin: 6 extracted rows
+- CamScanner 06-17-2026 23.10: 8 extracted rows
 
-- Inserted `Task ID: 901` into a sample audit PDF.
-- Confirmed the text remained machine-readable through PyMuPDF extraction.
-- Rendered all five output pages successfully at 120 DPI.
-- Visually checked page 1: the textbox border and text were visible and correctly placed.
+All four reports produced nonempty outputs.
 
-### 5. Master Data integrity - passed
+## 5. Master Data verification
 
-The supplied `Master_Data(2).xlsx` was copied unchanged to `data/Master_Data.xlsx`.
+`data/Master_Data.xlsx` is byte-for-byte identical to the uploaded `Master_Data(2).xlsx`.
 
-- Source SHA-256: `b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
-- Packaged SHA-256: `b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
-- Match: `YES`
+SHA-256:
+
+`b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
 
 ## Deployment note
 
-The editor component name was changed to `iars_pdf_textbox_editor_v22` so Streamlit and the browser do not reuse the cached v2.1 frontend code.
+After replacing the GitHub files, allow Streamlit Cloud to redeploy and use Ctrl+F5 once so the browser loads the v2.3 component name and current JavaScript.
