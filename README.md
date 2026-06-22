@@ -1,69 +1,99 @@
-# Internal Audit Report System (IARS) v2.8
+# Internal Audit Report System (IARS) v3.0
 
-## Main correction: first-name auditee tags
+## New: Permanent Private PDF Archive
 
-Version 2.8 resolves an abbreviated auditee tag against the full names written in the report header before applying the normal Master Data matching rule.
+Version 3.0 preserves all existing extraction, tagging, Master Data, frequency, auditee-matching, explanation and date-format rules from v2.9 and adds a permanent PDF archive using **Supabase Storage + Supabase Postgres metadata**.
 
-Example:
+### Saved PDFs features
 
-- Report header: `AUDITEE NAME: Dianne Susie Berbano and Jinky Venise Angel`
-- Issue tag: `Auditee: Jinky`
-- Header name selected: `Jinky Venise Angel`
-- Final Master Data result: `Jinky Venise Vicente Angel` with Employee ID `20250035`
+- Private `audit-pdf-archive` bucket
+- Metadata table `pdf_archive`
+- Archive original PDFs after successful extraction
+- Archive original and/or tagged PDFs from the PDF Tagging Editor
+- Direct multi-PDF archive upload
+- Automatic detection of Audit Reference and Auditee Name
+- Editable metadata before upload
+- Search by Audit Reference, Auditee Name, filename or uploader
+- Filter by Original/Tagged and upload-date range
+- Newest-first records
+- PDF preview with page navigation
+- Download selected archived PDF
+- Duplicate prevention through SHA-256
+- Delete confirmation requiring `DELETE`
+- Deletes both the Storage object and metadata row
+- Archive access PIN stored only in Streamlit Secrets
 
-## Matching order
+## One-time Supabase setup
 
-1. Read the report's `AUDITEE NAME:` field.
-2. Separate the listed auditees when the field contains `and`, `/`, or `&`.
-3. Compare the typed auditee tag with those header names.
-4. A first-name-only tag must match the first name of exactly one listed auditee.
-5. Pass the selected full header name through the existing Master Data employee matching rule.
-6. Carry the resolved auditee forward until a new auditee tag is encountered, following the existing auditee carry-forward rule.
+1. Create a Supabase project.
+2. Open **SQL Editor** in Supabase.
+3. Run the complete `SUPABASE_SETUP.sql` file.
+4. In Streamlit Community Cloud, open **Manage app > Settings > Secrets**.
+5. Paste and complete this configuration:
 
-## Ambiguity protection
+```toml
+[supabase]
+url = "https://YOUR-PROJECT.supabase.co"
+service_role_key = "YOUR-SERVICE-ROLE-KEY"
+bucket = "audit-pdf-archive"
+table = "pdf_archive"
 
-The parser does not guess when two header names have the same first name. In that case, it retains the original tag so that a more specific auditee name can be supplied.
+[archive]
+access_pin = "YOUR-STRONG-INTERNAL-PIN"
+```
 
-## Existing rules preserved
+The same template is included as `.streamlit/secrets.toml.example`.
 
-- Frequency and Reaction remain issue-specific and do not carry to later issues.
-- Auditee, Auditor, and Task ID retain their existing carry-forward behavior.
-- `Second Time` and higher continue to produce `Performed SAME offense`.
-- The true issue-title, explanation-cause, and incomplete-PCV-detail rules remain active.
-- The Components v2 PDF textbox editor remains unchanged.
+## Security requirements
 
-## PDF textbox editor
+- Never upload `.streamlit/secrets.toml` to GitHub.
+- Never place the Supabase service-role key directly in `app.py`.
+- The service-role key bypasses Row Level Security and must remain server-side.
+- The bucket is private and the metadata table has Row Level Security enabled.
+- No public Storage or database policies are created by the setup script.
+- Use a strong Archive PIN because audit PDFs may contain confidential information.
 
-- Double-right-click the same PDF location to add a textbox.
-- Click inside the textbox and type directly.
-- Drag the blue `move` strip to reposition the textbox.
-- Drag the side or corner handles to resize it.
-- Use `Fit text` to tighten the box around the text.
-- Textbox records are maintained for all PDF pages.
-- Generate and download a searchable tagged PDF.
+## Normal workflow
 
-## Deployment
+### Generate Extraction
 
-Replace the existing repository files with all files from this package:
+1. Upload one or several audit PDFs.
+2. Unlock **Saved PDFs** using the Archive PIN.
+3. Keep **Save successfully processed original PDFs to the permanent archive** checked.
+4. Enter `Uploaded By`.
+5. Generate extraction.
+6. Successfully processed originals are archived automatically. Duplicate files are skipped without blocking extraction.
 
-- `app.py`
-- `iars_parser.py`
-- `iars_pdf_editor.py`
-- `requirements.txt`
-- `packages.txt`
-- `data/Master_Data.xlsx`
+### PDF Tagging Editor
 
-After Streamlit finishes redeploying, press `Ctrl + F5` once.
+1. Upload and tag the PDF.
+2. Generate the tagged PDF.
+3. Open **Save original/tagged PDF to permanent archive**.
+4. Select `Original`, `Tagged`, or both.
+5. Enter `Uploaded By` and save.
 
-## Master Data
+### Saved PDFs
 
-The included `data/Master_Data.xlsx` is unchanged from the current approved Master Data workbook.
+1. Unlock with the Archive PIN.
+2. Upload files directly or review existing records.
+3. Search/filter the archive.
+4. Select a record and click **Load Selected PDF**.
+5. Preview or download it.
+6. To delete, type `DELETE` and click **Delete Selected PDF**.
 
-## v2.9 - Blank Number Column and ISO Date Formatting
+## Repository files
 
-This version changes the generated extraction output as follows:
+- `app.py` - Streamlit interface
+- `iars_parser.py` - audit extraction rules
+- `iars_pdf_editor.py` - PDF textbox editor
+- `iars_archive.py` - Supabase archive operations
+- `data/Master_Data.xlsx` - current permanent Master Data
+- `SUPABASE_SETUP.sql` - one-time bucket/table setup
+- `.streamlit/secrets.toml.example` - secrets template only
+- `requirements.txt` - Python dependencies
+- `packages.txt` - operating-system dependencies
+- `TEST_RESULTS.md` - verification record
 
-- The `#` column remains present but every generated data row is blank.
-- `Encoded Date` uses the system date on the day the extraction is generated and is displayed as `YYYY-MM-DD`.
-- `Date Reported` is converted from common report-date formats, such as `June 9, 2026`, to `YYYY-MM-DD`.
-- Existing extraction, auditee matching, frequency, explanation, finding classification, and PDF editor rules are preserved.
+## Important limitation
+
+The application and archive logic were locally tested using the current source files and a simulated Supabase client. A live Supabase upload/download/delete test requires your own Supabase project and credentials. The app remains fully usable for extraction and PDF tagging before Supabase is configured; the Saved PDFs tab displays setup instructions until valid secrets are supplied.

@@ -1,59 +1,64 @@
-# IARS v2.9 Test Results
+# IARS v3.0 Test Results
 
-## Requested output rules
+Test date: 2026-06-22
 
-- `#` column: blank for every generated finding row.
-- `Encoded Date`: today's system date in `YYYY-MM-DD` format.
-- `Date Reported`: report date converted to `YYYY-MM-DD` format.
+## Application tests
 
-## Target report verification
+- Python compilation: PASS
+  - `app.py`
+  - `iars_archive.py`
+  - `iars_parser.py`
+  - `iars_pdf_editor.py`
+- Streamlit 1.58.0 AppTest with archive secrets absent: PASS
+- AppTest exceptions: 0
+- Tabs detected:
+  - Generate Extraction
+  - PDF Tagging Editor
+  - Saved PDFs
+- Local Streamlit server startup: PASS
+- Streamlit health endpoint: PASS
 
-Test report: `tagged_2026IAD222_Vet_City_Marikina (2).pdf`
+## Archive service tests using simulated Supabase
 
-- Findings generated: 7
-- `#`: blank in all 7 rows
-- `Encoded Date`: `2026-06-22` in all 7 rows during testing
-- `Date Reported`: `2026-06-09` in all 7 rows
-- Target report was processed five consecutive times with identical output.
+- Upload PDF to private bucket abstraction: PASS
+- Insert archive metadata: PASS
+- SHA-256 duplicate prevention: PASS
+- Newest-first record listing: PASS
+- Search/filter by auditee, type and date: PASS
+- Private PDF download: PASS
+- Delete Storage object: PASS
+- Delete metadata row: PASS
+- Storage path sanitization: PASS
+- Year/Audit Reference/Original-Tagged folder structure: PASS
 
-## Date-format tests
+## Real PDF metadata test
 
-Passed input conversion tests for:
+Source: `tagged_2026IAD222_Vet_City_Marikina (2).pdf`
 
-- `June 9, 2026`
-- `JUNE 9, 2026`
-- `Jun 9 2026`
-- `06/09/2026`
-- `2026-06-09`
-- `June 9th, 2026`
+- Audit Reference detected: `2026IAD222` - PASS
+- Header Auditee detected: `Dianne Susie Berbano and Jinky Venise Angel` - PASS
 
-All converted to `2026-06-09`.
+## Parser regression test
 
-## Regression tests
+The current 2026IAD222 tagged PDF was processed using the included Master Data.
 
-Nine audit reports passed extraction regression testing:
+- Finding rows: 7 - PASS
+- `#` column blank: PASS
+- Encoded Date format `yyyy-mm-dd`: PASS
+- Date Reported: `2026-06-09` - PASS
+- True issue-title rules retained: PASS
+- PCV missing-detail augmentation retained: PASS
+- Issue-specific frequency retained: PASS
+- Second Time -> Performed SAME offense retained: PASS
+- First-name auditee matching retained: PASS
 
-- 2026IAD209 Michelle Mesa
-- 2026IAD211 Mia Montejo
-- 2026IAD212 Mirz Dula-ugon
-- 2026IAD214 Jennifer Cabintoy
-- 2026IAD215 Jennel Kate Fortin
-- 2026IAD220 Jugine Corpuz
-- 2026IAD221 Timothy So
-- 2026IAD013 Angelica Cuevas
-- 2026IAD222 Vet City Marikina
+## Dependency/API compatibility checks
 
-Confirmed for every generated row:
+- `supabase==2.31.0` installed and imported: PASS
+- Storage upload accepts `bytes`: PASS
+- Storage download returns `bytes`: PASS
+- Storage remove accepts `list[str]`: PASS
 
-- blank `#` value
-- ISO `Encoded Date`
-- ISO `Date Reported`, or `None` only when the source report does not contain a recognizable report date
+## Live-cloud limitation
 
-## Technical checks
-
-- `app.py`: Python compilation passed
-- `iars_parser.py`: Python compilation passed
-- `iars_pdf_editor.py`: Python compilation passed
-- Generated Excel workbook opened successfully
-- Key output range verified
-- Formula-error scan returned zero errors
+A real Supabase project was not available during packaging. Therefore, live network upload, list, download and delete operations could not be executed against the user's production project. The same operations were tested using a stateful simulated Supabase client, and the Python method signatures were checked against `supabase==2.31.0`.

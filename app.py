@@ -1,6 +1,7 @@
 
 from pathlib import Path
 from io import BytesIO
+from datetime import date
 import base64
 import hashlib
 
@@ -8,6 +9,23 @@ import pandas as pd
 import streamlit as st
 
 from iars_pdf_editor import pdf_textbox_editor
+
+from iars_archive import (
+    ArchiveConfig,
+    ArchiveError,
+    ArchiveNotConfiguredError,
+    DuplicateArchiveError,
+    archive_is_configured,
+    create_archive_client,
+    delete_pdf as delete_archived_pdf,
+    download_pdf as download_archived_pdf,
+    extract_archive_metadata,
+    filter_records as filter_archive_records,
+    human_file_size,
+    list_records as list_archive_records,
+    read_archive_config,
+    upload_pdf as upload_archived_pdf,
+)
 
 from iars_parser import (
     AUDITORS,
@@ -214,8 +232,129 @@ def build_default_tag_rows(page_count: int = 1):
     )
 
 
+
+@st.cache_data(show_spinner=False)
+def cached_archive_metadata(pdf_bytes: bytes, filename: str):
+    return extract_archive_metadata(pdf_bytes, filename)
+
+
+@st.cache_resource(show_spinner=False)
+def cached_archive_client(url: str, service_role_key: str, bucket: str, table: str):
+    return create_archive_client(
+        ArchiveConfig(
+            url=url,
+            service_role_key=service_role_key,
+            bucket=bucket,
+            table=table,
+        )
+    )
+
+
+def archive_client_or_none(config: ArchiveConfig):
+    if not archive_is_configured(config):
+        return None
+    try:
+        return cached_archive_client(
+            config.url,
+            config.service_role_key,
+            config.bucket,
+            config.table,
+        )
+    except Exception:
+        return None
+
+
+def archive_access_granted(config: ArchiveConfig) -> bool:
+    if not archive_is_configured(config):
+        return False
+    if not config.access_pin:
+        return False
+    return bool(st.session_state.get("archive_access_granted", False))
+
+
+def render_archive_setup_notice():
+    st.warning("Permanent PDF archiving is not configured yet.")
+    st.markdown(
+        "1. Create a Supabase project.\n"
+        "2. Run `SUPABASE_SETUP.sql` in the Supabase SQL Editor.\n"
+        "3. Copy the values from `.streamlit/secrets.toml.example` into Streamlit **App settings > Secrets**.\n"
+        "4. Use the **service-role key** only in Streamlit Secrets. Never commit it to GitHub."
+    )
+    st.code(
+        '[supabase]\n'
+        'url = "https://YOUR-PROJECT.supabase.co"\n'
+        'service_role_key = "YOUR-SERVICE-ROLE-KEY"\n'
+        'bucket = "audit-pdf-archive"\n'
+        'table = "pdf_archive"\n\n'
+        '[archive]\n'
+        'access_pin = "YOUR-STRONG-INTERNAL-PIN"',
+        language="toml",
+    )
+
+
+def render_archive_login(config: ArchiveConfig) -> bool:
+    if not archive_is_configured(config):
+        render_archive_setup_notice()
+        return False
+    if not config.access_pin:
+        st.error("Set `[archive].access_pin` in Streamlit Secrets before opening the PDF archive.")
+        return False
+    if st.session_state.get("archive_access_granted", False):
+        col_a, col_b = st.columns([4, 1])
+        with col_a:
+            st.success("Saved PDFs archive is unlocked for this browser session.")
+        with col_b:
+            if st.button("Lock Archive"):
+                st.session_state["archive_access_granted"] = False
+                st.rerun()
+        return True
+
+    pin = st.text_input("Archive access PIN", type="password", key="archive_pin_input")
+    if st.button("Unlock Saved PDFs", type="primary"):
+        if pin == config.access_pin:
+            st.session_state["archive_access_granted"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect archive PIN.")
+    return False
+
+
+def archive_pdf_with_feedback(
+    client,
+    config: ArchiveConfig,
+    *,
+    pdf_bytes: bytes,
+    filename: str,
+    audit_reference: str,
+    auditee_name: str,
+    document_type: str,
+    uploaded_by: str,
+):
+    try:
+        record = upload_archived_pdf(
+            client,
+            config,
+            pdf_bytes=pdf_bytes,
+            original_filename=filename,
+            audit_reference=audit_reference,
+            auditee_name=auditee_name,
+            document_type=document_type,
+            uploaded_by=uploaded_by,
+        )
+        return {"Status": "Archived", "File": filename, "Details": record.get("storage_path", "")}
+    except DuplicateArchiveError as exc:
+        return {"Status": "Duplicate skipped", "File": filename, "Details": str(exc)}
+    except Exception as exc:
+        return {"Status": "Archive failed", "File": filename, "Details": str(exc)}
+
+
+archive_config = read_archive_config(st.secrets)
+archive_client = archive_client_or_none(archive_config)
+archive_ready = archive_is_configured(archive_config) and archive_client is not None
+archive_unlocked = archive_access_granted(archive_config)
+
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor v2.5")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Private PDF Archive v3.0")
 
 with st.sidebar:
     st.header("Master Data")
@@ -239,6 +378,18 @@ with st.sidebar:
                 st.cache_data.clear()
                 st.success("Master Data updated. Please refresh the app.")
 
+    st.divider()
+    st.header("PDF Archive")
+    if archive_ready:
+        st.success("Supabase private archive connected.")
+        st.caption(f"Bucket: {archive_config.bucket}")
+        if archive_unlocked:
+            st.caption("Access: Unlocked")
+        else:
+            st.caption("Access: Locked")
+    else:
+        st.warning("Supabase archive not configured.")
+
 if not MASTER_DATA_PATH.exists():
     st.info("Please upload or add data/Master_Data.xlsx before generating extraction.")
     st.stop()
@@ -247,10 +398,7 @@ master_df, master_sheets = load_master_data(str(MASTER_DATA_PATH))
 auditors_df = master_sheets.get("Auditors", pd.DataFrame())
 auditor_options = auditors_df["Auditor"].dropna().astype(str).tolist() if not auditors_df.empty and "Auditor" in auditors_df.columns else AUDITORS
 
-tab_extract, tab_editor = st.tabs(["Generate Extraction", "PDF Tagging Editor"])
-
-
-
+tab_extract, tab_editor, tab_archive = st.tabs(["Generate Extraction", "PDF Tagging Editor", "Saved PDFs"])
 
 
 with tab_editor:
@@ -329,7 +477,6 @@ with tab_editor:
                     f"{len(nonempty_boxes)} containing text."
                 )
 
-            # Read the complete all-page state from the single persistent component.
             if not current_editor.get("pages"):
                 current_editor = component_editor_value(st.session_state.get(component_key))
             all_pages = current_editor.get("pages", {}) if isinstance(current_editor, dict) else {}
@@ -394,16 +541,281 @@ with tab_editor:
                     st.session_state.pop(component_key, None)
                     st.session_state.pop(f"tagged_pdf_{file_id}", None)
                     st.rerun()
+
+            with st.expander("Save original/tagged PDF to permanent archive"):
+                if not archive_ready:
+                    render_archive_setup_notice()
+                elif not archive_unlocked:
+                    st.info("Unlock the archive in the Saved PDFs tab before saving files.")
+                else:
+                    archive_defaults = cached_archive_metadata(pdf_bytes, tag_pdf.name)
+                    ar_ref = st.text_input(
+                        "Audit Reference",
+                        value=archive_defaults.get("audit_reference", ""),
+                        key=f"tag_archive_ref_{file_id}",
+                    )
+                    ar_name = st.text_input(
+                        "Auditee Name",
+                        value=archive_defaults.get("auditee_name", ""),
+                        key=f"tag_archive_name_{file_id}",
+                    )
+                    ar_by = st.text_input("Uploaded By", key=f"tag_archive_by_{file_id}")
+                    ar_versions = st.multiselect(
+                        "PDF version to archive",
+                        ["Original", "Tagged"],
+                        default=["Original"] + (["Tagged"] if st.session_state.get(f"tagged_pdf_{file_id}") else []),
+                        key=f"tag_archive_versions_{file_id}",
+                    )
+                    if st.button("Save Selected PDF Version(s)", key=f"tag_archive_save_{file_id}"):
+                        if not ar_by.strip():
+                            st.error("Uploaded By is required.")
+                        elif not ar_versions:
+                            st.error("Select at least one PDF version.")
+                        else:
+                            archive_results = []
+                            if "Original" in ar_versions:
+                                archive_results.append(
+                                    archive_pdf_with_feedback(
+                                        archive_client,
+                                        archive_config,
+                                        pdf_bytes=pdf_bytes,
+                                        filename=tag_pdf.name,
+                                        audit_reference=ar_ref,
+                                        auditee_name=ar_name,
+                                        document_type="Original",
+                                        uploaded_by=ar_by,
+                                    )
+                                )
+                            if "Tagged" in ar_versions:
+                                tagged_data = st.session_state.get(f"tagged_pdf_{file_id}")
+                                if tagged_data:
+                                    archive_results.append(
+                                        archive_pdf_with_feedback(
+                                            archive_client,
+                                            archive_config,
+                                            pdf_bytes=tagged_data,
+                                            filename=f"tagged_{tag_pdf.name}",
+                                            audit_reference=ar_ref,
+                                            auditee_name=ar_name,
+                                            document_type="Tagged",
+                                            uploaded_by=ar_by,
+                                        )
+                                    )
+                                else:
+                                    archive_results.append({"Status": "Skipped", "File": f"tagged_{tag_pdf.name}", "Details": "Generate the tagged PDF first."})
+                            st.dataframe(pd.DataFrame(archive_results), width="stretch", hide_index=True)
     else:
         st.info("Upload a PDF only when tags are needed. Otherwise, use Generate Extraction directly.")
 
+
+with tab_archive:
+    st.subheader("Saved PDFs")
+    st.caption("Private permanent archive for original and tagged audit-report PDFs.")
+
+    if render_archive_login(archive_config):
+        archive_unlocked = True
+        archive_client = archive_client_or_none(archive_config)
+        if archive_client is None:
+            st.error("Unable to connect to Supabase. Verify the URL and service-role key in Streamlit Secrets.")
+        else:
+            st.markdown("### Upload PDFs to Archive")
+            saved_uploads = st.file_uploader(
+                "Select one or multiple PDF files",
+                type=["pdf"],
+                accept_multiple_files=True,
+                key="archive_direct_upload",
+            )
+            direct_uploaded_by = st.text_input("Uploaded By", key="archive_direct_uploaded_by")
+
+            prepared_entries = []
+            if saved_uploads:
+                for index, uploaded in enumerate(saved_uploads):
+                    data = uploaded.getvalue()
+                    defaults = cached_archive_metadata(data, uploaded.name)
+                    with st.expander(uploaded.name, expanded=len(saved_uploads) == 1):
+                        ref = st.text_input(
+                            "Audit Reference",
+                            value=defaults.get("audit_reference", ""),
+                            key=f"archive_ref_{index}_{uploaded.name}",
+                        )
+                        auditee = st.text_input(
+                            "Auditee Name",
+                            value=defaults.get("auditee_name", ""),
+                            key=f"archive_auditee_{index}_{uploaded.name}",
+                        )
+                        doc_type = st.selectbox(
+                            "Document Type",
+                            ["Original", "Tagged"],
+                            key=f"archive_type_{index}_{uploaded.name}",
+                        )
+                    prepared_entries.append((uploaded.name, data, ref, auditee, doc_type))
+
+                if st.button("Archive Selected PDFs", type="primary"):
+                    if not direct_uploaded_by.strip():
+                        st.error("Uploaded By is required.")
+                    else:
+                        results = []
+                        for filename, data, ref, auditee, doc_type in prepared_entries:
+                            results.append(
+                                archive_pdf_with_feedback(
+                                    archive_client,
+                                    archive_config,
+                                    pdf_bytes=data,
+                                    filename=filename,
+                                    audit_reference=ref,
+                                    auditee_name=auditee,
+                                    document_type=doc_type,
+                                    uploaded_by=direct_uploaded_by,
+                                )
+                            )
+                        st.dataframe(pd.DataFrame(results), width="stretch", hide_index=True)
+
+            st.divider()
+            title_col, refresh_col = st.columns([4, 1])
+            with title_col:
+                st.markdown("### Archived PDF Records")
+            with refresh_col:
+                if st.button("Refresh List"):
+                    st.session_state.pop("archive_preview_bytes", None)
+                    st.rerun()
+
+            try:
+                records = list_archive_records(archive_client, archive_config)
+            except Exception as exc:
+                st.error(f"Unable to load archive records: {exc}")
+                records = []
+
+            if not records:
+                st.info("No PDFs have been archived yet.")
+            else:
+                filter_1, filter_2, filter_3, filter_4 = st.columns([2, 1, 1, 1])
+                with filter_1:
+                    search_text = st.text_input(
+                        "Search",
+                        placeholder="Audit reference, auditee, filename or uploader",
+                        key="archive_search",
+                    )
+                with filter_2:
+                    type_filter = st.selectbox("Document Type", ["All", "Original", "Tagged"], key="archive_type_filter")
+                with filter_3:
+                    start_filter = st.date_input("Uploaded From", value=None, key="archive_start_date")
+                with filter_4:
+                    end_filter = st.date_input("Uploaded To", value=None, key="archive_end_date")
+
+                filtered = filter_archive_records(
+                    records,
+                    search=search_text,
+                    document_type=type_filter,
+                    start_date=start_filter if isinstance(start_filter, date) else None,
+                    end_date=end_filter if isinstance(end_filter, date) else None,
+                )
+
+                display_rows = []
+                for record in filtered:
+                    display_rows.append(
+                        {
+                            "Audit Reference": record.get("audit_reference", ""),
+                            "Auditee Name": record.get("auditee_name", ""),
+                            "Filename": record.get("original_filename", ""),
+                            "Type": record.get("document_type", ""),
+                            "Uploaded Date": str(record.get("uploaded_at", ""))[:10],
+                            "Uploaded By": record.get("uploaded_by", ""),
+                            "File Size": human_file_size(record.get("file_size")),
+                        }
+                    )
+
+                st.caption(f"Showing {len(filtered)} of {len(records)} archived PDF record(s).")
+                if display_rows:
+                    st.dataframe(pd.DataFrame(display_rows), width="stretch", hide_index=True)
+
+                    labels = []
+                    record_by_label = {}
+                    for idx, record in enumerate(filtered, start=1):
+                        label = (
+                            f"{record.get('audit_reference') or 'No Ref'} | "
+                            f"{record.get('auditee_name') or 'No Auditee'} | "
+                            f"{record.get('document_type', '')} | "
+                            f"{record.get('original_filename', '')} | {idx}"
+                        )
+                        labels.append(label)
+                        record_by_label[label] = record
+
+                    selected_label = st.selectbox("Select a PDF to preview, download or delete", labels)
+                    selected_record = record_by_label[selected_label]
+
+                    if st.button("Load Selected PDF"):
+                        try:
+                            selected_bytes = download_archived_pdf(
+                                archive_client,
+                                archive_config,
+                                selected_record.get("storage_path", ""),
+                            )
+                            st.session_state["archive_preview_bytes"] = selected_bytes
+                            st.session_state["archive_preview_record_id"] = selected_record.get("id")
+                        except Exception as exc:
+                            st.error(str(exc))
+
+                    selected_bytes = None
+                    if st.session_state.get("archive_preview_record_id") == selected_record.get("id"):
+                        selected_bytes = st.session_state.get("archive_preview_bytes")
+
+                    if selected_bytes:
+                        st.download_button(
+                            "Download Selected PDF",
+                            data=selected_bytes,
+                            file_name=selected_record.get("original_filename", "archived.pdf"),
+                            mime="application/pdf",
+                        )
+                        try:
+                            import fitz
+
+                            archive_doc = fitz.open(stream=selected_bytes, filetype="pdf")
+                            preview_page = st.number_input(
+                                "Preview Page",
+                                min_value=1,
+                                max_value=len(archive_doc),
+                                value=1,
+                                step=1,
+                                key=f"archive_preview_page_{selected_record.get('id')}",
+                            )
+                            preview_image, _, _ = render_pdf_page(selected_bytes, int(preview_page) - 1, zoom=1.35)
+                            if preview_image is not None:
+                                st.image(preview_image, caption=f"Page {preview_page}", width="stretch")
+                        except Exception as exc:
+                            st.warning(f"PDF preview unavailable: {exc}")
+
+                    st.markdown("#### Delete Selected PDF")
+                    st.warning("Deleting removes both the private Storage object and its archive metadata.")
+                    confirmation = st.text_input(
+                        "Type DELETE to confirm",
+                        key=f"delete_confirm_{selected_record.get('id')}",
+                    )
+                    if st.button(
+                        "Delete Selected PDF",
+                        type="primary",
+                        disabled=confirmation.strip().upper() != "DELETE",
+                    ):
+                        try:
+                            delete_archived_pdf(archive_client, archive_config, selected_record)
+                            st.session_state.pop("archive_preview_bytes", None)
+                            st.session_state.pop("archive_preview_record_id", None)
+                            st.success("Archived PDF deleted successfully.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
+                else:
+                    st.info("No archived PDFs match the selected filters.")
+
+
 with tab_extract:
     st.subheader("System Status")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Master Data", "Loaded")
     with col2:
         st.metric("Employees", len(master_df))
+    with col3:
+        st.metric("PDF Archive", "Connected" if archive_ready else "Not configured")
 
     st.divider()
     st.header("Audit Reports")
@@ -417,19 +829,54 @@ with tab_extract:
     if pdf_files:
         st.success(f"{len(pdf_files)} PDF report(s) uploaded successfully.")
 
+        archive_after_extract = False
+        extraction_uploaded_by = ""
+        if archive_ready and archive_unlocked:
+            archive_after_extract = st.checkbox(
+                "Save successfully processed original PDFs to the permanent archive",
+                value=True,
+                key="archive_after_extract",
+            )
+            if archive_after_extract:
+                extraction_uploaded_by = st.text_input("Uploaded By", key="extract_archive_uploaded_by")
+        elif archive_ready:
+            st.info("Unlock the Saved PDFs tab to enable automatic archiving after extraction.")
+        else:
+            st.caption("Permanent archive is unavailable until Supabase is configured.")
+
         if st.button("Generate Extraction", type="primary"):
             all_results = []
             processing_errors = []
+            archive_results = []
+
+            if archive_after_extract and not extraction_uploaded_by.strip():
+                st.error("Uploaded By is required when automatic archiving is enabled.")
+                st.stop()
 
             progress = st.progress(0)
             status = st.empty()
 
             for idx, pdf_file in enumerate(pdf_files, start=1):
+                pdf_data = pdf_file.getvalue()
                 try:
                     status.write(f"Processing {idx} of {len(pdf_files)}: {pdf_file.name}")
-
+                    pdf_file.seek(0)
                     result_df, header, items = build_records(pdf_file, master_df, auditors_df=auditors_df)
                     all_results.append(result_df)
+
+                    if archive_after_extract:
+                        archive_results.append(
+                            archive_pdf_with_feedback(
+                                archive_client,
+                                archive_config,
+                                pdf_bytes=pdf_data,
+                                filename=pdf_file.name,
+                                audit_reference=str(header.get("audit_reference", "") or ""),
+                                auditee_name=str(header.get("auditee_name", "") or ""),
+                                document_type="Original",
+                                uploaded_by=extraction_uploaded_by,
+                            )
+                        )
 
                 except Exception as e:
                     processing_errors.append({
@@ -477,6 +924,10 @@ with tab_extract:
                     file_name="audit_extraction_consolidated.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+
+            if archive_results:
+                st.subheader("Archive Results")
+                st.dataframe(pd.DataFrame(archive_results), width="stretch", hide_index=True)
 
             if processing_errors:
                 st.warning("Some PDF files were not processed.")
