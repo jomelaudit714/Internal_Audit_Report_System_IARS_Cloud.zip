@@ -1,79 +1,59 @@
-# IARS v2.8 Test Results
+# IARS v2.9 Test Results
 
-Test date: June 19, 2026
+## Requested output rules
+
+- `#` column: blank for every generated finding row.
+- `Encoded Date`: today's system date in `YYYY-MM-DD` format.
+- `Date Reported`: report date converted to `YYYY-MM-DD` format.
 
 ## Target report verification
 
-Report tested:
+Test report: `tagged_2026IAD222_Vet_City_Marikina (2).pdf`
 
-`tagged_2026IAD222_Vet_City_Marikina (2).pdf`
+- Findings generated: 7
+- `#`: blank in all 7 rows
+- `Encoded Date`: `2026-06-22` in all 7 rows during testing
+- `Date Reported`: `2026-06-09` in all 7 rows
+- Target report was processed five consecutive times with identical output.
 
-The report header contains:
+## Date-format tests
 
-`AUDITEE NAME: Dianne Susie Berbano and Jinky Venise Angel`
+Passed input conversion tests for:
 
-Issue 6 contains the tag:
+- `June 9, 2026`
+- `JUNE 9, 2026`
+- `Jun 9 2026`
+- `06/09/2026`
+- `2026-06-09`
+- `June 9th, 2026`
 
-`Auditee: Jinky`
-
-Version 2.8 correctly performed the following sequence:
-
-1. Resolved `Jinky` to the header name `Jinky Venise Angel`.
-2. Applied the normal Master Data matching rule.
-3. Returned `Jinky Venise Vicente Angel`.
-4. Returned Employee ID `20250035`.
-5. Applied the resolved auditee to Task ID `002` findings until changed.
-
-Verified output:
-
-- Issues 1-4: `Dianne Susie Capisonda Berbano` / `20180006` / Task ID `001`
-- Issues 5-7: `Jinky Venise Vicente Angel` / `20250035` / Task ID `002`
-
-## Repeatability test
-
-The target report was processed five consecutive times.
-
-Result: all five outputs were identical.
-
-## Header-resolution unit tests
-
-Passed:
-
-- `Jinky` -> `Jinky Venise Angel`
-- `Dianne` -> `Dianne Susie Berbano`
-- `Jinky Venise` -> `Jinky Venise Angel`
-- Unknown first name -> original tag retained
-- Duplicate first name in header -> original tag retained to prevent guessing
+All converted to `2026-06-09`.
 
 ## Regression tests
 
-Nonempty extraction results were confirmed for ten existing reports:
+Nine audit reports passed extraction regression testing:
 
-- 2026IAD013 - Angelica Cuevas: 5 rows
-- 2026IAD209 - Michelle Mesa: 3 rows
-- 2026IAD211 - Mia Montejo: 1 row
-- 2026IAD212 - Mirz Dula-ugon: 1 row
-- 2026IAD214 - Jennifer Cabintoy: 1 row
-- 2026IAD215 - Jennel Kate Fortin: 6 rows
-- 2026IAD220 - Jugine Corpuz: 4 rows
-- 2026IAD221 - Timothy So: 1 row
-- CamScanner 06-17-2026 23.10: 8 rows
-- EMERITO: 8 rows
+- 2026IAD209 Michelle Mesa
+- 2026IAD211 Mia Montejo
+- 2026IAD212 Mirz Dula-ugon
+- 2026IAD214 Jennifer Cabintoy
+- 2026IAD215 Jennel Kate Fortin
+- 2026IAD220 Jugine Corpuz
+- 2026IAD221 Timothy So
+- 2026IAD013 Angelica Cuevas
+- 2026IAD222 Vet City Marikina
 
-## Code validation
+Confirmed for every generated row:
 
-Passed:
+- blank `#` value
+- ISO `Encoded Date`
+- ISO `Date Reported`, or `None` only when the source report does not contain a recognizable report date
 
-- `app.py` Python compilation
-- `iars_parser.py` Python compilation
-- `iars_pdf_editor.py` Python compilation
+## Technical checks
 
-## PDF visual verification
-
-The target PDF was rendered successfully into 11 page images. Page 2 visually confirms the issue-level tag `Auditee: Jinky` beside Task ID `002`.
-
-## Master Data verification
-
-SHA-256 of included `data/Master_Data.xlsx`:
-
-`b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`
+- `app.py`: Python compilation passed
+- `iars_parser.py`: Python compilation passed
+- `iars_pdf_editor.py`: Python compilation passed
+- Generated Excel workbook opened successfully
+- Key output range verified
+- Formula-error scan returned zero errors

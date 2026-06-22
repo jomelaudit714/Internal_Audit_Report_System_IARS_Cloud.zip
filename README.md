@@ -58,3 +58,12 @@ After Streamlit finishes redeploying, press `Ctrl + F5` once.
 ## Master Data
 
 The included `data/Master_Data.xlsx` is unchanged from the current approved Master Data workbook.
+
+## v2.9 - Blank Number Column and ISO Date Formatting
+
+This version changes the generated extraction output as follows:
+
+- The `#` column remains present but every generated data row is blank.
+- `Encoded Date` uses the system date on the day the extraction is generated and is displayed as `YYYY-MM-DD`.
+- `Date Reported` is converted from common report-date formats, such as `June 9, 2026`, to `YYYY-MM-DD`.
+- Existing extraction, auditee matching, frequency, explanation, finding classification, and PDF editor rules are preserved.

@@ -1,5 +1,5 @@
 import re
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 import pandas as pd
 import pdfplumber
@@ -240,8 +240,56 @@ def extract_all_text(pdf_file):
     return text.replace("\r", "\n")
 
 
+def normalize_date_yyyy_mm_dd(value):
+    """Return a recognized report date in YYYY-MM-DD format.
+
+    Supports common report formats such as:
+    - June 9, 2026
+    - JUNE 9, 2026
+    - Jun 9 2026
+    - 06/09/2026
+    - 2026-06-09
+    """
+    raw = clean_text(value)
+    if not raw or raw.lower() == "none":
+        return "None"
+
+    # Remove ordinal suffixes while preserving the day number.
+    raw = re.sub(r"\b(\d{1,2})(st|nd|rd|th)\b", r"\1", raw, flags=re.I)
+
+    # Prefer a date-like substring when extraction includes surrounding text.
+    month_match = re.search(
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December|"
+        r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\b",
+        raw,
+        re.I,
+    )
+    numeric_match = re.search(r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b", raw)
+    candidate = month_match.group(0) if month_match else (numeric_match.group(0) if numeric_match else raw)
+
+    for fmt in (
+        "%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%b %d %Y",
+        "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m-%d-%Y",
+        "%d/%m/%Y", "%d-%m-%Y", "%d %B %Y", "%d %b %Y",
+    ):
+        try:
+            return datetime.strptime(candidate.strip(), fmt).date().isoformat()
+        except ValueError:
+            continue
+
+    # Final tolerant fallback through pandas for unusual but valid date strings.
+    try:
+        parsed = pd.to_datetime(candidate, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.date().isoformat()
+    except Exception:
+        pass
+
+    return raw
+
+
 def extract_header(text):
-    date_reported = find_after_label(text, "DATE")
+    date_reported = normalize_date_yyyy_mm_dd(find_after_label(text, "DATE"))
     audit_reference = find_after_label(text, "REF")
     auditee_name = find_after_label(text, "AUDITEE NAME")
     period = find_after_label(text, ["PERIOD DATE", "COVERING PERIOD", "SCOPE DATE"])
@@ -2750,7 +2798,7 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
             "issue": issue_title,
             "findings": findings,
             "row": [
-                row_no, date.today().isoformat(), audit_type, header["date_reported"],
+                "", date.today().isoformat(), audit_type, header["date_reported"],
                 header["audit_reference"], row_emp_id, row_emp_name, task_id or "None",
                 header["scope_date"], header["year"], findings,
                 issue_title,  # Issue Detail Issue = exact issue title.
@@ -2768,9 +2816,9 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
     filtered = filter_rows_by_task_id(row_dicts)
 
     rows = []
-    for new_no, row_info in enumerate(filtered, 1):
+    for row_info in filtered:
         row = row_info["row"]
-        row[0] = new_no
+        row[0] = ""
         rows.append(row)
 
     return pd.DataFrame(rows, columns=HEADERS), header, items
@@ -2816,7 +2864,7 @@ def build_records(pdf_file, master_df=None, manual_df=None, auditors_df=None):
         user = auditor_user(auditor, auditors_df)
 
         rows.append([
-            row_no, date.today().isoformat(), audit_type, header["date_reported"],
+            "", date.today().isoformat(), audit_type, header["date_reported"],
             header["audit_reference"], emp_id, emp_name, task_id or "None",
             header["scope_date"], header["year"], findings,
             make_issue_summary(item["issue"], item["narrative"]),
@@ -2849,4 +2897,8 @@ def excel_bytes(df):
         for row in ws.iter_rows(min_row=2):
             for cell in row:
                 cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
+        for cell in ws["B"][1:]:
+            cell.number_format = "yyyy-mm-dd"
+        for cell in ws["D"][1:]:
+            cell.number_format = "yyyy-mm-dd"
     return output.getvalue()
