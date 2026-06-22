@@ -1,51 +1,79 @@
-# IARS v2.7 Test Results
+# IARS v2.8 Test Results
 
-## Target report
+Test date: June 19, 2026
+
+## Target report verification
+
+Report tested:
 
 `tagged_2026IAD222_Vet_City_Marikina (2).pdf`
 
-## Required outcome
+The report header contains:
 
-| Issue | Frequency | Reaction |
-|---|---|---|
-| CASH OVERAGE - P10,996.31 | Second Time | Performed SAME offense |
-| INCOMPLETE DETAILS IN PCV - PAYEE, AMOUNT | First Time | Do Some Adjustment |
-| AMOUNT DISCREPANCY IN PCV AS AGAINST RECEIPT | First Time | Do Some Adjustment |
-| NO ATTACHED SUPPORTING DOCUMENTS | First Time | Do Some Adjustment |
-| INCOMPLETE RECEIPT INFORMATION | Second Time | Performed SAME offense |
-| CASH SHORTAGE: (P3,274.00) | First Time | Do Some Adjustment |
-| NON-COMPLIANCE WITH REMITTANCE SCHEDULE | First Time | Do Some Adjustment |
+`AUDITEE NAME: Dianne Susie Berbano and Jinky Venise Angel`
 
-## Tests performed
+Issue 6 contains the tag:
 
-1. Target report processed five consecutive times with identical results: PASS.
-2. Frequency on Issue 1 did not carry to Issues 2-4: PASS.
-3. Frequency on Issue 5 did not carry to Issues 6-7: PASS.
-4. `2nd Time` normalization to `Second Time`: PASS.
-5. `second time` normalization to `Second Time`: PASS.
-6. First through Seventh Time normalization checks: PASS.
-7. Second Time Reaction evaluated as `Performed SAME offense`: PASS.
-8. Previous-audit narrative without carry-forward still evaluated as Second Time: PASS.
-9. Auditee, Auditor and Task ID carry-forward remained active: PASS.
-10. Python compilation for app.py, iars_parser.py and iars_pdf_editor.py: PASS.
-11. Regression extraction completed without errors on 11 reports: PASS.
+`Auditee: Jinky`
 
-## Regression reports
+Version 2.8 correctly performed the following sequence:
 
-- 2026IAD013_ Angelica Cuevas.pdf - 5 rows
-- 2026IAD209_Michelle_Mesa(2).pdf - 3 rows
-- 2026IAD211_Mia_Montejo.pdf - 1 row
-- 2026IAD212_Mirz_Dula-ugon.pdf - 1 row
-- 2026IAD214_Jennifer_Cabintoy.pdf - 1 row
-- 2026IAD215_Jennel Kate Fortin(1).pdf - 6 rows
-- 2026IAD220_Jugine_Corpuz(2).pdf - 4 rows
-- 2026IAD221_Timothy_So(1).pdf - 1 row
-- CamScanner 06-17-2026 23.10.pdf - 8 rows
-- EMERITO.pdf - 8 rows
-- tagged_2026IAD222_Vet_City_Marikina (2).pdf - 7 rows
+1. Resolved `Jinky` to the header name `Jinky Venise Angel`.
+2. Applied the normal Master Data matching rule.
+3. Returned `Jinky Venise Vicente Angel`.
+4. Returned Employee ID `20250035`.
+5. Applied the resolved auditee to Task ID `002` findings until changed.
+
+Verified output:
+
+- Issues 1-4: `Dianne Susie Capisonda Berbano` / `20180006` / Task ID `001`
+- Issues 5-7: `Jinky Venise Vicente Angel` / `20250035` / Task ID `002`
+
+## Repeatability test
+
+The target report was processed five consecutive times.
+
+Result: all five outputs were identical.
+
+## Header-resolution unit tests
+
+Passed:
+
+- `Jinky` -> `Jinky Venise Angel`
+- `Dianne` -> `Dianne Susie Berbano`
+- `Jinky Venise` -> `Jinky Venise Angel`
+- Unknown first name -> original tag retained
+- Duplicate first name in header -> original tag retained to prevent guessing
+
+## Regression tests
+
+Nonempty extraction results were confirmed for ten existing reports:
+
+- 2026IAD013 - Angelica Cuevas: 5 rows
+- 2026IAD209 - Michelle Mesa: 3 rows
+- 2026IAD211 - Mia Montejo: 1 row
+- 2026IAD212 - Mirz Dula-ugon: 1 row
+- 2026IAD214 - Jennifer Cabintoy: 1 row
+- 2026IAD215 - Jennel Kate Fortin: 6 rows
+- 2026IAD220 - Jugine Corpuz: 4 rows
+- 2026IAD221 - Timothy So: 1 row
+- CamScanner 06-17-2026 23.10: 8 rows
+- EMERITO: 8 rows
+
+## Code validation
+
+Passed:
+
+- `app.py` Python compilation
+- `iars_parser.py` Python compilation
+- `iars_pdf_editor.py` Python compilation
+
+## PDF visual verification
+
+The target PDF was rendered successfully into 11 page images. Page 2 visually confirms the issue-level tag `Auditee: Jinky` beside Task ID `002`.
 
 ## Master Data verification
 
-The SHA-256 hash of the packaged `data/Master_Data.xlsx` matches the uploaded `Master_Data(2).xlsx`:
+SHA-256 of included `data/Master_Data.xlsx`:
 
 `b934f7f417ffcbffba6c63adad647b9e38053e6bec9d750d447216bf6666488a`

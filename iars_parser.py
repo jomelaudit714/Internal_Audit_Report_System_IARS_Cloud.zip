@@ -1639,6 +1639,81 @@ def remove_title_from_segment(segment, title):
 
 
 
+def resolve_auditee_tag_from_header(raw_name, header_auditee):
+    """Resolve a partial auditee tag against the report's AUDITEE NAME header.
+
+    Example:
+    - Header: ``Dianne Susie Berbano and Jinky Venise Angel``
+    - Tag: ``Auditee: Jinky``
+    - Resolved name: ``Jinky Venise Angel``
+
+    The resolved full header name is then passed through the normal Master Data
+    employee matching rule. A match is accepted only when one header candidate
+    has a uniquely higher score, preventing guesses when names are ambiguous.
+    """
+    raw_name = clean_text(raw_name)
+    header_auditee = clean_text(header_auditee)
+    if not raw_name or not header_auditee:
+        return raw_name
+
+    candidates = split_possible_auditees(header_auditee)
+    if not candidates:
+        return raw_name
+
+    raw_norm = normalize_for_match(raw_name)
+    raw_tokens = [t for t in raw_norm.split() if len(t) > 1]
+    if not raw_tokens:
+        return raw_name
+
+    scored = []
+    for candidate in candidates:
+        candidate_clean = re.sub(
+            r"^(?:MR|MS|MRS|DR)\.?\s+",
+            "",
+            clean_text(candidate),
+            flags=re.I,
+        )
+        candidate_norm = normalize_for_match(candidate_clean)
+        candidate_tokens = [t for t in candidate_norm.split() if len(t) > 1]
+        if not candidate_tokens:
+            continue
+
+        score = 0
+        if candidate_norm == raw_norm:
+            score = 100
+        else:
+            contained = sum(1 for token in raw_tokens if token in candidate_tokens)
+            if contained == len(raw_tokens):
+                score += 30 + (contained * 5)
+            else:
+                score += contained * 5
+
+            # A single first-name tag should strongly prefer the candidate whose
+            # first name exactly matches that tag.
+            if len(raw_tokens) == 1 and candidate_tokens[0] == raw_tokens[0]:
+                score += 50
+
+            # For a longer partial tag, preserve natural name order.
+            if len(raw_tokens) >= 2:
+                positions = [candidate_tokens.index(t) for t in raw_tokens if t in candidate_tokens]
+                if len(positions) == len(raw_tokens) and positions == sorted(positions):
+                    score += 10
+
+        if score > 0:
+            scored.append((score, len(candidate_tokens), candidate_clean))
+
+    if not scored:
+        return raw_name
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    best_score = scored[0][0]
+    best = [item for item in scored if item[0] == best_score]
+    if len(best) == 1:
+        return best[0][2]
+
+    return raw_name
+
+
 def canonical_employee_name(master_df, raw_name):
     """Map raw/handwritten auditee name to master employee ID and full name."""
     emp_id, emp_name = match_employee(master_df, raw_name)
@@ -1725,6 +1800,7 @@ def extract_context_tags(text, master_df=None, auditors_df=None, rows=None):
     }
 
     lines = [clean_text(x) for x in (text or "").splitlines() if clean_text(x)]
+    header_auditee = extract_header(text).get("auditee_name", "")
     current_issue = None
 
     # PDF text order can place a typed tag and issue title before the issue number.
@@ -1776,7 +1852,11 @@ def extract_context_tags(text, master_df=None, auditors_df=None, rows=None):
 
         if auditee_val:
             persistent["auditee_raw"] = auditee_val
-            emp_id, emp_name = canonical_employee_name(master_df, auditee_val)
+            resolved_auditee = resolve_auditee_tag_from_header(
+                auditee_val,
+                header_auditee,
+            )
+            emp_id, emp_name = canonical_employee_name(master_df, resolved_auditee)
             persistent["auditee_id"] = emp_id
             persistent["auditee_name"] = emp_name
 

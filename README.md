@@ -1,60 +1,50 @@
-# Internal Audit Report System (IARS) v2.7
+# Internal Audit Report System (IARS) v2.8
 
-## Main correction
+## Main correction: first-name auditee tags
 
-Version 2.7 fixes Frequency and Reaction evaluation.
+Version 2.8 resolves an abbreviated auditee tag against the full names written in the report header before applying the normal Master Data matching rule.
 
-### Frequency is issue-specific
+Example:
 
-`Frequency Rate:` and `Frequency:` tags apply only to the issue where the tag is placed. They do not carry forward to the following issue.
+- Report header: `AUDITEE NAME: Dianne Susie Berbano and Jinky Venise Angel`
+- Issue tag: `Auditee: Jinky`
+- Header name selected: `Jinky Venise Angel`
+- Final Master Data result: `Jinky Venise Vicente Angel` with Employee ID `20250035`
 
-The following tags still carry forward until replaced:
+## Matching order
 
-- Auditee
-- Auditor
-- Task ID
+1. Read the report's `AUDITEE NAME:` field.
+2. Separate the listed auditees when the field contains `and`, `/`, or `&`.
+3. Compare the typed auditee tag with those header names.
+4. A first-name-only tag must match the first name of exactly one listed auditee.
+5. Pass the selected full header name through the existing Master Data employee matching rule.
+6. Carry the resolved auditee forward until a new auditee tag is encountered, following the existing auditee carry-forward rule.
 
-### Frequency normalization
+## Ambiguity protection
 
-The parser normalizes ordinal tags to the IARS dropdown values:
+The parser does not guess when two header names have the same first name. In that case, it retains the original tag so that a more specific auditee name can be supplied.
 
-- `1st Time` / `First Time` -> `First Time`
-- `2nd Time` / `Second Time` -> `Second Time`
-- `3rd Time` / `Third Time` -> `Third Time`
-- through `Seventh Time`
+## Existing rules preserved
 
-### Reaction for repeated findings
+- Frequency and Reaction remain issue-specific and do not carry to later issues.
+- Auditee, Auditor, and Task ID retain their existing carry-forward behavior.
+- `Second Time` and higher continue to produce `Performed SAME offense`.
+- The true issue-title, explanation-cause, and incomplete-PCV-detail rules remain active.
+- The Components v2 PDF textbox editor remains unchanged.
 
-When Frequency is `Second Time` or higher, Reaction is evaluated as:
+## PDF textbox editor
 
-`Performed SAME offense`
-
-It is no longer evaluated as `Do Some Adjustment`.
-
-### Existing previous-audit rule
-
-When no explicit frequency tag is present but the issue states that the same finding was noted in a previous audit, the issue is evaluated as:
-
-- Frequency: `Second Time`
-- Reaction: `Performed SAME offense`
-
-## Verified 2026IAD222 result
-
-- Issue 1 - `CASH OVERAGE - P10,996.31`: Second Time / Performed SAME offense
-- Issues 2 to 4: First Time / Do Some Adjustment
-- Issue 5 - `INCOMPLETE RECEIPT INFORMATION`: Second Time / Performed SAME offense
-- Issues 6 and 7: First Time / Do Some Adjustment
-
-## Preserved corrections
-
-- True issue title is captured instead of activity headings such as Revolving Fund.
-- Explanation captures cause statements after overage/shortage/discrepancy phrases.
-- Incomplete PCV details are combined without duplication, e.g. `PAYEE, AMOUNT`.
-- The PDF textbox editor remains unchanged.
+- Double-right-click the same PDF location to add a textbox.
+- Click inside the textbox and type directly.
+- Drag the blue `move` strip to reposition the textbox.
+- Drag the side or corner handles to resize it.
+- Use `Fit text` to tighten the box around the text.
+- Textbox records are maintained for all PDF pages.
+- Generate and download a searchable tagged PDF.
 
 ## Deployment
 
-Upload and replace all files in the repository root:
+Replace the existing repository files with all files from this package:
 
 - `app.py`
 - `iars_parser.py`
@@ -63,8 +53,8 @@ Upload and replace all files in the repository root:
 - `packages.txt`
 - `data/Master_Data.xlsx`
 
-Do not mix files from older ZIP versions. After Streamlit redeploys, press `Ctrl + F5` once.
+After Streamlit finishes redeploying, press `Ctrl + F5` once.
 
 ## Master Data
 
-The included `data/Master_Data.xlsx` is unchanged from the uploaded `Master_Data(2).xlsx`.
+The included `data/Master_Data.xlsx` is unchanged from the current approved Master Data workbook.
