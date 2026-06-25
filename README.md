@@ -1,6 +1,6 @@
-# IARS v3.7.0 — Admin-Approved Username Login
+# IARS v3.8.1 — Multi-User Admin-Approved Login
 
-This release removes the SMS/phone-OTP authentication introduced in v3.6.0 while retaining all existing extraction, exact external-system headers, Master Data behavior, blank Auditor 2 behavior, Supabase PDF archive, and automatic PDF compression.
+This release restores multi-user access without SMS/phone OTP while retaining all existing extraction, exact external-system headers, Master Data behavior, blank Auditor 2 behavior, Supabase PDF archive, and automatic PDF compression.
 
 ## Account design
 
@@ -65,3 +65,8 @@ Every original or tagged PDF saved to the private Supabase archive is automatica
 ## Deployment
 
 Upload all package files together, commit them to the branch used by Streamlit, run the SQL setup once, update Streamlit Secrets, and reboot the app.
+
+
+## Visibility improvement
+
+After the administrator signs in, **Account Administration (Admin Only)** is expanded automatically in the sidebar so pending registrations and account controls are immediately visible.

@@ -579,7 +579,7 @@ archive_ready = archive_is_configured(archive_config) and archive_client is not 
 archive_unlocked = archive_access_granted(archive_config)
 
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Admin-Approved Username Login + Auto-Compressed Private PDF Archive v3.7.0")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Admin-Approved Username Login + Auto-Compressed Private PDF Archive v3.8.1")
 
 with st.sidebar:
     render_account_sidebar(auth_client, auth_user, auth_config)

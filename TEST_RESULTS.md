@@ -1,4 +1,4 @@
-# Test Results — IARS v3.7.0
+# Test Results — IARS v3.8.1
 
 ## Static validation
 
@@ -43,3 +43,5 @@
 - Validated Master Data retained unchanged from the prior package: PASSED
 
 Live Supabase table operations require running `SUPABASE_USER_AUTH_SETUP.sql` in the user's project and therefore were not executed in the offline test environment.
+
+- Confirmed Account Administration expander is visible and expanded for the administrator.

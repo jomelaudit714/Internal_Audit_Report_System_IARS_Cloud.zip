@@ -943,7 +943,7 @@ def render_account_sidebar(
     st.caption("Role: Administrator" if is_admin_user(user) else "Role: User")
 
     if is_admin_user(user):
-        with st.expander("Account Administration", expanded=False):
+        with st.expander("Account Administration (Admin Only)", expanded=True):
             _render_admin_controls(client, config)
 
     if st.button("Sign Out", key="iars_sign_out", use_container_width=True):

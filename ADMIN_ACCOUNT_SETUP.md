@@ -1,4 +1,4 @@
-# IARS v3.7.0 — Admin-Approved Username Login Setup
+# IARS v3.8.1 — Multi-User Admin-Approved Login Setup
 
 This version does **not** use SMS, Twilio, phone OTP, or Supabase Phone Auth.
 
@@ -90,4 +90,4 @@ Reset codes expire after 30 minutes and become invalid after five incorrect atte
 
 ## 7. Existing v3.6.0 phone-auth accounts
 
-Accounts previously created through Supabase Phone Auth are not automatically copied into `iars_users`. After deploying v3.7.0, each standard user should submit a new username-based registration, or the administrator may keep the system limited to the single administrator account until user access is needed.
+Accounts previously created through Supabase Phone Auth are not automatically copied into `iars_users`. After deploying v3.8.1, each standard user should submit a new username-based registration, or the administrator may keep the system limited to the single administrator account until user access is needed.
