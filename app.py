@@ -4,11 +4,13 @@ from io import BytesIO
 from datetime import date
 import base64
 import hashlib
+import re
 
 import pandas as pd
 import streamlit as st
 
 from iars_pdf_editor import pdf_textbox_editor
+from iars_auth import read_auth_config, render_auth_gate, render_account_sidebar
 
 from iars_archive import (
     ArchiveConfig,
@@ -23,16 +25,19 @@ from iars_archive import (
     filter_records as filter_archive_records,
     human_file_size,
     list_records as list_archive_records,
+    list_additional_auditors,
+    add_additional_auditor,
     read_archive_config,
     upload_pdf as upload_archived_pdf,
 )
 
 from iars_parser import (
     AUDITORS,
-    REACTION_OPTIONS,
-    FREQUENCY_OPTIONS,
-    FINDINGS_DROPDOWN,
+    master_finding_options,
+    master_response_options,
+    master_frequency_options,
     build_records,
+    normalize_output_with_master,
     excel_bytes,
 )
 
@@ -41,6 +46,9 @@ st.set_page_config(
     page_icon="📄",
     layout="wide",
 )
+
+auth_config = read_auth_config(st.secrets)
+auth_client, auth_user = render_auth_gate(auth_config)
 
 MASTER_DATA_PATH = Path("data/Master_Data.xlsx")
 
@@ -233,6 +241,200 @@ def build_default_tag_rows(page_count: int = 1):
 
 
 
+def _clean_option(value):
+    return " ".join(str(value or "").split()).strip()
+
+
+def _master_display_option(value):
+    """Preserve exact Master Data capitalization and internal spacing."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value).strip()
+
+
+def get_employee_records(employees_df: pd.DataFrame):
+    """Return canonical employee names and aliases from Master Data."""
+    if employees_df is None or employees_df.empty:
+        return []
+
+    name_column = None
+    for candidate in ("Employee Name", "Full Name", "Name"):
+        if candidate in employees_df.columns:
+            name_column = candidate
+            break
+    if not name_column:
+        return []
+
+    records = []
+    for _, row in employees_df.iterrows():
+        status = _clean_option(row.get("Status", "Active"))
+        if status and status.casefold() not in {"active", ""}:
+            continue
+        full_name = _clean_option(row.get(name_column, ""))
+        if not full_name:
+            continue
+        aliases = []
+        for column in ("Alias 1", "Alias 2"):
+            if column in employees_df.columns:
+                alias = _clean_option(row.get(column, ""))
+                if alias:
+                    aliases.append(alias)
+        records.append(
+            {
+                "name": full_name,
+                "employee_id": _clean_option(row.get("Employee ID", "")),
+                "aliases": aliases,
+            }
+        )
+    return records
+
+
+def normalize_name_for_match(value: str) -> str:
+    return re.sub(r"[^A-Z0-9 ]+", " ", _clean_option(value).upper()).strip()
+
+
+def resolve_auditee_defaults(raw_name: str, employee_records):
+    """Resolve PDF header auditees to official Master Data employee names."""
+    raw_name = _clean_option(raw_name)
+    if not raw_name or not employee_records:
+        return []
+
+    chunks = [
+        _clean_option(chunk)
+        for chunk in re.split(r"\s+(?:AND|&)\s+|[;\n]+", raw_name, flags=re.I)
+        if _clean_option(chunk)
+    ]
+    if not chunks:
+        chunks = [raw_name]
+
+    resolved = []
+    for chunk in chunks:
+        chunk_norm = normalize_name_for_match(chunk)
+        chunk_tokens = [token for token in chunk_norm.split() if token]
+        best_name = ""
+        best_score = 0
+
+        for record in employee_records:
+            variants = [record["name"], *record.get("aliases", [])]
+            for variant in variants:
+                variant_norm = normalize_name_for_match(variant)
+                variant_tokens = [token for token in variant_norm.split() if token]
+                if not variant_tokens:
+                    continue
+
+                score = 0
+                if chunk_norm == variant_norm:
+                    score = 100
+                elif variant_norm in chunk_norm or chunk_norm in variant_norm:
+                    score = 90
+                else:
+                    shared = len(set(chunk_tokens) & set(variant_tokens))
+                    if chunk_tokens and variant_tokens and chunk_tokens[0] == variant_tokens[0]:
+                        score += 35
+                    if chunk_tokens and variant_tokens and chunk_tokens[-1] == variant_tokens[-1]:
+                        score += 35
+                    score += min(shared, 3) * 10
+
+                if score > best_score:
+                    best_score = score
+                    best_name = record["name"]
+
+        if best_name and best_score >= 45 and best_name not in resolved:
+            resolved.append(best_name)
+
+    return resolved
+
+
+def official_auditee_string(raw_name: str, employee_records) -> str:
+    return "; ".join(resolve_auditee_defaults(raw_name, employee_records))
+
+
+def build_auditor_options(master_auditors_df: pd.DataFrame, extra_rows):
+    options = []
+    seen = set()
+
+    if master_auditors_df is not None and not master_auditors_df.empty and "Auditor" in master_auditors_df.columns:
+        for _, row in master_auditors_df.iterrows():
+            status = _clean_option(row.get("Status", "Active"))
+            if status and status.casefold() not in {"active", ""}:
+                continue
+            name = _master_display_option(row.get("Auditor", ""))
+            if name and name.casefold() not in seen:
+                options.append(name)
+                seen.add(name.casefold())
+
+    for row in extra_rows or []:
+        status = _clean_option(row.get("status", "Active"))
+        if status.casefold() != "active":
+            continue
+        name = _master_display_option(row.get("auditor_name", ""))
+        if name and name.casefold() not in seen:
+            options.append(name)
+            seen.add(name.casefold())
+
+    return sorted(options, key=str.casefold)
+
+
+def render_auditor_selector(label: str, key: str, auditor_options):
+    """Search button + searchable dropdown for a single auditor."""
+    search_state = f"{key}_applied_search"
+    search_col, button_col, clear_col = st.columns([3, 1, 1])
+    with search_col:
+        query = st.text_input(
+            "Search auditor",
+            key=f"{key}_search_input",
+            placeholder="Enter part of the auditor's name",
+            label_visibility="collapsed",
+        )
+    with button_col:
+        if st.button("Search", key=f"{key}_search_button", use_container_width=True):
+            st.session_state[search_state] = query.strip()
+    with clear_col:
+        if st.button("Clear", key=f"{key}_clear_button", use_container_width=True):
+            st.session_state[search_state] = ""
+
+    applied = str(st.session_state.get(search_state, "") or "").strip().casefold()
+    filtered = [name for name in auditor_options if applied in name.casefold()] if applied else list(auditor_options)
+    if applied and not filtered:
+        st.warning("No active auditor matched the search. Clear the search or add a new auditor.")
+
+    select_options = [""] + filtered
+    return st.selectbox(
+        label,
+        select_options,
+        index=0,
+        key=f"{key}_select",
+        format_func=lambda value: "Select an auditor" if not value else value,
+    )
+
+
+def render_auditee_selector(label: str, key: str, employee_options, defaults=None):
+    valid_defaults = [name for name in (defaults or []) if name in employee_options]
+    return st.multiselect(
+        label,
+        employee_options,
+        default=valid_defaults,
+        key=key,
+        placeholder="Type to search Master Data employee names",
+    )
+
+
+def canonical_names_from_result(result_df: pd.DataFrame) -> str:
+    if result_df is None or result_df.empty or "Name" not in result_df.columns:
+        return ""
+    names = []
+    for value in result_df["Name"].tolist():
+        name = _clean_option(value)
+        if name and name.casefold() not in {"none", "n/a", "not found"} and name not in names:
+            names.append(name)
+    return "; ".join(names)
+
+
 @st.cache_data(show_spinner=False)
 def cached_archive_metadata(pdf_bytes: bytes, filename: str):
     return extract_archive_metadata(pdf_bytes, filename)
@@ -341,7 +543,25 @@ def archive_pdf_with_feedback(
             document_type=document_type,
             uploaded_by=uploaded_by,
         )
-        return {"Status": "Archived", "File": filename, "Details": record.get("storage_path", "")}
+        compression = record.get("_compression", {}) or {}
+        storage_path = record.get("storage_path", "")
+        original_size = compression.get("original_size")
+        stored_size = compression.get("stored_size", record.get("file_size"))
+        reduction = compression.get("reduction_percent", 0)
+        note = compression.get("compression_note", "")
+
+        if compression.get("compression_applied"):
+            details = (
+                f"{storage_path} | Compressed {human_file_size(original_size)} → "
+                f"{human_file_size(stored_size)} ({reduction}% smaller)"
+            )
+            status = "Archived and compressed"
+        else:
+            size_text = human_file_size(stored_size) if stored_size is not None else ""
+            details = f"{storage_path} | {size_text} | {note}".strip(" |")
+            status = "Archived"
+
+        return {"Status": status, "File": filename, "Details": details}
     except DuplicateArchiveError as exc:
         return {"Status": "Duplicate skipped", "File": filename, "Details": str(exc)}
     except Exception as exc:
@@ -354,9 +574,11 @@ archive_ready = archive_is_configured(archive_config) and archive_client is not 
 archive_unlocked = archive_access_granted(archive_config)
 
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Private PDF Archive v3.0")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Secure Login + Auto-Compressed Private PDF Archive v3.6.0")
 
 with st.sidebar:
+    render_account_sidebar(auth_client, auth_user)
+    st.divider()
     st.header("Master Data")
 
     if MASTER_DATA_PATH.exists():
@@ -396,7 +618,26 @@ if not MASTER_DATA_PATH.exists():
 
 master_df, master_sheets = load_master_data(str(MASTER_DATA_PATH))
 auditors_df = master_sheets.get("Auditors", pd.DataFrame())
-auditor_options = auditors_df["Auditor"].dropna().astype(str).tolist() if not auditors_df.empty and "Auditor" in auditors_df.columns else AUDITORS
+employee_records = get_employee_records(master_df)
+employee_options = sorted({record["name"] for record in employee_records}, key=str.casefold)
+
+# Dropdown labels come directly from Master Data. Findings show category only;
+# Score remains in the separate Score output column.
+finding_options = master_finding_options(master_sheets)
+response_options = master_response_options(master_sheets)
+frequency_options = master_frequency_options(master_sheets)
+
+additional_auditor_rows = []
+additional_auditor_error = ""
+if archive_ready and archive_client is not None:
+    try:
+        additional_auditor_rows = list_additional_auditors(archive_client, active_only=False)
+    except Exception as exc:
+        additional_auditor_error = str(exc)
+
+auditor_options = build_auditor_options(auditors_df, additional_auditor_rows)
+if not auditor_options:
+    auditor_options = sorted({_clean_option(name) for name in AUDITORS if _clean_option(name)}, key=str.casefold)
 
 tab_extract, tab_editor, tab_archive = st.tabs(["Generate Extraction", "PDF Tagging Editor", "Saved PDFs"])
 
@@ -554,12 +795,21 @@ with tab_editor:
                         value=archive_defaults.get("audit_reference", ""),
                         key=f"tag_archive_ref_{file_id}",
                     )
-                    ar_name = st.text_input(
-                        "Auditee Name",
-                        value=archive_defaults.get("auditee_name", ""),
-                        key=f"tag_archive_name_{file_id}",
+                    tag_default_auditees = resolve_auditee_defaults(
+                        archive_defaults.get("auditee_name", ""), employee_records
                     )
-                    ar_by = st.text_input("Uploaded By", key=f"tag_archive_by_{file_id}")
+                    ar_names = render_auditee_selector(
+                        "Auditee Name(s) — Master Data Employees",
+                        f"tag_archive_name_{file_id}",
+                        employee_options,
+                        tag_default_auditees,
+                    )
+                    ar_name = "; ".join(ar_names)
+                    ar_by = render_auditor_selector(
+                        "Uploaded By",
+                        f"tag_archive_by_{file_id}",
+                        auditor_options,
+                    )
                     ar_versions = st.multiselect(
                         "PDF version to archive",
                         ["Original", "Tagged"],
@@ -610,7 +860,10 @@ with tab_editor:
 
 with tab_archive:
     st.subheader("Saved PDFs")
-    st.caption("Private permanent archive for original and tagged audit-report PDFs.")
+    st.caption(
+        "Private permanent archive for original and tagged audit-report PDFs. "
+        "PDFs are automatically compressed with balanced quality before upload."
+    )
 
     if render_archive_login(archive_config):
         archive_unlocked = True
@@ -618,6 +871,37 @@ with tab_archive:
         if archive_client is None:
             st.error("Unable to connect to Supabase. Verify the URL and service-role key in Streamlit Secrets.")
         else:
+            st.markdown("### Auditor Directory")
+            with st.expander("Add New Auditor", expanded=False):
+                if additional_auditor_error:
+                    st.warning(
+                        "The additional-auditor table is not ready. Run "
+                        "SUPABASE_AUDITOR_MIGRATION.sql in Supabase, then refresh the app."
+                    )
+                with st.form("add_new_auditor_form", clear_on_submit=True):
+                    new_auditor_name = st.text_input("Auditor Full Name")
+                    new_auditor_designation = st.text_input("Designation")
+                    new_auditor_user = st.text_input("User / Display Name")
+                    new_auditor_email = st.text_input("Email (optional)")
+                    new_auditor_status = st.selectbox("Status", ["Active", "Inactive"])
+                    add_auditor_submit = st.form_submit_button("Add New Auditor", type="primary")
+
+                if add_auditor_submit:
+                    try:
+                        add_additional_auditor(
+                            archive_client,
+                            auditor_name=new_auditor_name,
+                            designation=new_auditor_designation,
+                            user_display=new_auditor_user,
+                            email=new_auditor_email,
+                            status=new_auditor_status,
+                            created_by="IARS Archive Admin",
+                        )
+                        st.success("New auditor added successfully and is now available in the dropdown.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
             st.markdown("### Upload PDFs to Archive")
             saved_uploads = st.file_uploader(
                 "Select one or multiple PDF files",
@@ -625,7 +909,11 @@ with tab_archive:
                 accept_multiple_files=True,
                 key="archive_direct_upload",
             )
-            direct_uploaded_by = st.text_input("Uploaded By", key="archive_direct_uploaded_by")
+            direct_uploaded_by = render_auditor_selector(
+                "Uploaded By",
+                "archive_direct_uploaded_by",
+                auditor_options,
+            )
 
             prepared_entries = []
             if saved_uploads:
@@ -638,11 +926,16 @@ with tab_archive:
                             value=defaults.get("audit_reference", ""),
                             key=f"archive_ref_{index}_{uploaded.name}",
                         )
-                        auditee = st.text_input(
-                            "Auditee Name",
-                            value=defaults.get("auditee_name", ""),
-                            key=f"archive_auditee_{index}_{uploaded.name}",
+                        default_auditees = resolve_auditee_defaults(
+                            defaults.get("auditee_name", ""), employee_records
                         )
+                        selected_auditees = render_auditee_selector(
+                            "Auditee Name(s) — Master Data Employees",
+                            f"archive_auditee_{index}_{uploaded.name}",
+                            employee_options,
+                            default_auditees,
+                        )
+                        auditee = "; ".join(selected_auditees)
                         doc_type = st.selectbox(
                             "Document Type",
                             ["Original", "Tagged"],
@@ -838,7 +1131,11 @@ with tab_extract:
                 key="archive_after_extract",
             )
             if archive_after_extract:
-                extraction_uploaded_by = st.text_input("Uploaded By", key="extract_archive_uploaded_by")
+                extraction_uploaded_by = render_auditor_selector(
+                    "Uploaded By",
+                    "extract_archive_uploaded_by",
+                    auditor_options,
+                )
         elif archive_ready:
             st.info("Unlock the Saved PDFs tab to enable automatic archiving after extraction.")
         else:
@@ -861,7 +1158,12 @@ with tab_extract:
                 try:
                     status.write(f"Processing {idx} of {len(pdf_files)}: {pdf_file.name}")
                     pdf_file.seek(0)
-                    result_df, header, items = build_records(pdf_file, master_df, auditors_df=auditors_df)
+                    result_df, header, items = build_records(
+                        pdf_file,
+                        master_df,
+                        auditors_df=auditors_df,
+                        master_sheets=master_sheets,
+                    )
                     all_results.append(result_df)
 
                     if archive_after_extract:
@@ -872,7 +1174,10 @@ with tab_extract:
                                 pdf_bytes=pdf_data,
                                 filename=pdf_file.name,
                                 audit_reference=str(header.get("audit_reference", "") or ""),
-                                auditee_name=str(header.get("auditee_name", "") or ""),
+                                auditee_name=(
+                                    canonical_names_from_result(result_df)
+                                    or official_auditee_string(str(header.get("auditee_name", "") or ""), employee_records)
+                                ),
                                 document_type="Original",
                                 uploaded_by=extraction_uploaded_by,
                             )
@@ -901,7 +1206,7 @@ with tab_extract:
                     column_config={
                         "Findings": st.column_config.SelectboxColumn(
                             "Findings",
-                            options=FINDINGS_DROPDOWN,
+                            options=finding_options,
                         ),
                         "Audited By1": st.column_config.SelectboxColumn(
                             "Audited By1",
@@ -909,13 +1214,19 @@ with tab_extract:
                         ),
                         "Reaction": st.column_config.SelectboxColumn(
                             "Reaction",
-                            options=REACTION_OPTIONS,
+                            options=response_options,
                         ),
                         "Frequency": st.column_config.SelectboxColumn(
                             "Frequency",
-                            options=FREQUENCY_OPTIONS,
+                            options=frequency_options,
                         ),
                     },
+                )
+
+                edited_result = normalize_output_with_master(
+                    edited_result,
+                    master_sheets=master_sheets,
+                    auditors_df=auditors_df,
                 )
 
                 st.download_button(

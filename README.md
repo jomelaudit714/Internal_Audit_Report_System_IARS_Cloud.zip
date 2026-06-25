@@ -1,99 +1,55 @@
-# Internal Audit Report System (IARS) v3.0
+# IARS v3.6.0 — Secure Phone Login and Automatic PDF Compression
 
-## New: Permanent Private PDF Archive
+This release keeps all v3.5.3 extraction, exact database headers, Master Data behavior, blank Auditor 2 behavior, and automatic PDF archive compression.
 
-Version 3.0 preserves all existing extraction, tagging, Master Data, frequency, auditee-matching, explanation and date-format rules from v2.9 and adds a permanent PDF archive using **Supabase Storage + Supabase Postgres metadata**.
+## New authentication features
 
-### Saved PDFs features
+The entire IARS application is now protected by Supabase Auth.
 
-- Private `audit-pdf-archive` bucket
-- Metadata table `pdf_archive`
-- Archive original PDFs after successful extraction
-- Archive original and/or tagged PDFs from the PDF Tagging Editor
-- Direct multi-PDF archive upload
-- Automatic detection of Audit Reference and Auditee Name
-- Editable metadata before upload
-- Search by Audit Reference, Auditee Name, filename or uploader
-- Filter by Original/Tagged and upload-date range
-- Newest-first records
-- PDF preview with page navigation
-- Download selected archived PDF
-- Duplicate prevention through SHA-256
-- Delete confirmation requiring `DELETE`
-- Deletes both the Storage object and metadata row
-- Archive access PIN stored only in Streamlit Secrets
+### Sign Up
 
-## One-time Supabase setup
+Users provide only:
 
-1. Create a Supabase project.
-2. Open **SQL Editor** in Supabase.
-3. Run the complete `SUPABASE_SETUP.sql` file.
-4. In Streamlit Community Cloud, open **Manage app > Settings > Secrets**.
-5. Paste and complete this configuration:
+- Full Name
+- Contact Number
+- Password
+- Password confirmation
 
-```toml
-[supabase]
-url = "https://YOUR-PROJECT.supabase.co"
-service_role_key = "YOUR-SERVICE-ROLE-KEY"
-bucket = "audit-pdf-archive"
-table = "pdf_archive"
+After registration, Supabase sends a six-digit SMS code. The user must enter the code before the account becomes verified.
 
-[archive]
-access_pin = "YOUR-STRONG-INTERNAL-PIN"
-```
+### Sign In
 
-The same template is included as `.streamlit/secrets.toml.example`.
+Verified users sign in using:
 
-## Security requirements
+- Contact Number
+- Password
 
-- Never upload `.streamlit/secrets.toml` to GitHub.
-- Never place the Supabase service-role key directly in `app.py`.
-- The service-role key bypasses Row Level Security and must remain server-side.
-- The bucket is private and the metadata table has Row Level Security enabled.
-- No public Storage or database policies are created by the setup script.
-- Use a strong Archive PIN because audit PDFs may contain confidential information.
+### Forgot Password
 
-## Normal workflow
+Users can reset their password using:
 
-### Generate Extraction
+1. Registered Contact Number
+2. SMS verification code
+3. New Password
 
-1. Upload one or several audit PDFs.
-2. Unlock **Saved PDFs** using the Archive PIN.
-3. Keep **Save successfully processed original PDFs to the permanent archive** checked.
-4. Enter `Uploaded By`.
-5. Generate extraction.
-6. Successfully processed originals are archived automatically. Duplicate files are skipped without blocking extraction.
+### Account controls
 
-### PDF Tagging Editor
+- The signed-in user's name and contact number appear in the sidebar.
+- A Sign Out button securely clears the current Streamlit session.
+- Philippine mobile-number formats are automatically normalized to E.164 format.
+- Passwords require at least eight characters with at least one letter and one number.
+- The archive's service-role key is not used for user authentication.
 
-1. Upload and tag the PDF.
-2. Generate the tagged PDF.
-3. Open **Save original/tagged PDF to permanent archive**.
-4. Select `Original`, `Tagged`, or both.
-5. Enter `Uploaded By` and save.
+## Required Supabase setup
 
-### Saved PDFs
+Phone authentication cannot send codes until a supported SMS provider is configured in Supabase.
 
-1. Unlock with the Archive PIN.
-2. Upload files directly or review existing records.
-3. Search/filter the archive.
-4. Select a record and click **Load Selected PDF**.
-5. Preview or download it.
-6. To delete, type `DELETE` and click **Delete Selected PDF**.
+See `SUPABASE_AUTH_SETUP.md` and update Streamlit Secrets using `.streamlit/secrets.toml.example`.
 
-## Repository files
+## Existing PDF compression behavior
 
-- `app.py` - Streamlit interface
-- `iars_parser.py` - audit extraction rules
-- `iars_pdf_editor.py` - PDF textbox editor
-- `iars_archive.py` - Supabase archive operations
-- `data/Master_Data.xlsx` - current permanent Master Data
-- `SUPABASE_SETUP.sql` - one-time bucket/table setup
-- `.streamlit/secrets.toml.example` - secrets template only
-- `requirements.txt` - Python dependencies
-- `packages.txt` - operating-system dependencies
-- `TEST_RESULTS.md` - verification record
+Every original or tagged PDF saved to the private Supabase archive is optimized before upload when a smaller safe result can be produced. Searchable text and page count are preserved, and signed or encrypted PDFs are retained unchanged.
 
-## Important limitation
+## Deployment
 
-The application and archive logic were locally tested using the current source files and a simulated Supabase client. A live Supabase upload/download/delete test requires your own Supabase project and credentials. The app remains fully usable for extraction and PDF tagging before Supabase is configured; the Saved PDFs tab displays setup instructions until valid secrets are supplied.
+Deploy all files from this ZIP together, including the new `iars_auth.py` file. Commit the changes and reboot the Streamlit app.

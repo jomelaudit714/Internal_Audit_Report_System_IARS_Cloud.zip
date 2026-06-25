@@ -1,64 +1,23 @@
-# IARS v3.0 Test Results
+# Test Results — IARS v3.6.0
 
-Test date: 2026-06-22
+- Python syntax compilation for `app.py`: PASSED
+- Python syntax compilation for `iars_auth.py`: PASSED
+- Python syntax compilation for `iars_archive.py`: PASSED
+- Python syntax compilation for `iars_parser.py`: PASSED
+- Python syntax compilation for `iars_pdf_editor.py`: PASSED
+- Philippine phone normalization (`0917`, `917`, `63`, `+63` formats): PASSED
+- Invalid phone-number rejection: PASSED
+- Password minimum-length validation: PASSED
+- Password letter-and-number validation: PASSED
+- Password confirmation matching: PASSED
+- Sign-up integration uses phone, password, and full-name metadata: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
+- SMS OTP verification uses `type="sms"`: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
+- Sign-in integration uses phone and password: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
+- Forgot-password flow uses phone OTP followed by authenticated password update: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
+- Session tokens are stored only in Streamlit session state: IMPLEMENTED
+- Archive service-role key is separated from the end-user anon key: IMPLEMENTED
+- Account sidebar and sign-out control: IMPLEMENTED
+- Existing v3.5.3 PDF compression retained: PASSED
+- Existing v3.5.2 parser and Master Data retained unchanged: PASSED
 
-## Application tests
-
-- Python compilation: PASS
-  - `app.py`
-  - `iars_archive.py`
-  - `iars_parser.py`
-  - `iars_pdf_editor.py`
-- Streamlit 1.58.0 AppTest with archive secrets absent: PASS
-- AppTest exceptions: 0
-- Tabs detected:
-  - Generate Extraction
-  - PDF Tagging Editor
-  - Saved PDFs
-- Local Streamlit server startup: PASS
-- Streamlit health endpoint: PASS
-
-## Archive service tests using simulated Supabase
-
-- Upload PDF to private bucket abstraction: PASS
-- Insert archive metadata: PASS
-- SHA-256 duplicate prevention: PASS
-- Newest-first record listing: PASS
-- Search/filter by auditee, type and date: PASS
-- Private PDF download: PASS
-- Delete Storage object: PASS
-- Delete metadata row: PASS
-- Storage path sanitization: PASS
-- Year/Audit Reference/Original-Tagged folder structure: PASS
-
-## Real PDF metadata test
-
-Source: `tagged_2026IAD222_Vet_City_Marikina (2).pdf`
-
-- Audit Reference detected: `2026IAD222` - PASS
-- Header Auditee detected: `Dianne Susie Berbano and Jinky Venise Angel` - PASS
-
-## Parser regression test
-
-The current 2026IAD222 tagged PDF was processed using the included Master Data.
-
-- Finding rows: 7 - PASS
-- `#` column blank: PASS
-- Encoded Date format `yyyy-mm-dd`: PASS
-- Date Reported: `2026-06-09` - PASS
-- True issue-title rules retained: PASS
-- PCV missing-detail augmentation retained: PASS
-- Issue-specific frequency retained: PASS
-- Second Time -> Performed SAME offense retained: PASS
-- First-name auditee matching retained: PASS
-
-## Dependency/API compatibility checks
-
-- `supabase==2.31.0` installed and imported: PASS
-- Storage upload accepts `bytes`: PASS
-- Storage download returns `bytes`: PASS
-- Storage remove accepts `list[str]`: PASS
-
-## Live-cloud limitation
-
-A real Supabase project was not available during packaging. Therefore, live network upload, list, download and delete operations could not be executed against the user's production project. The same operations were tested using a stateful simulated Supabase client, and the Python method signatures were checked against `supabase==2.31.0`.
+Live SMS delivery requires the user's Supabase Phone provider and SMS provider credentials and therefore cannot be completed in the offline test environment.
