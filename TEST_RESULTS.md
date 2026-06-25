@@ -1,23 +1,45 @@
-# Test Results — IARS v3.6.0
+# Test Results — IARS v3.7.0
+
+## Static validation
 
 - Python syntax compilation for `app.py`: PASSED
 - Python syntax compilation for `iars_auth.py`: PASSED
 - Python syntax compilation for `iars_archive.py`: PASSED
 - Python syntax compilation for `iars_parser.py`: PASSED
 - Python syntax compilation for `iars_pdf_editor.py`: PASSED
-- Philippine phone normalization (`0917`, `917`, `63`, `+63` formats): PASSED
-- Invalid phone-number rejection: PASSED
-- Password minimum-length validation: PASSED
-- Password letter-and-number validation: PASSED
-- Password confirmation matching: PASSED
-- Sign-up integration uses phone, password, and full-name metadata: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
-- SMS OTP verification uses `type="sms"`: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
-- Sign-in integration uses phone and password: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
-- Forgot-password flow uses phone OTP followed by authenticated password update: VERIFIED AGAINST SUPABASE-PY 2.31.0 API
-- Session tokens are stored only in Streamlit session state: IMPLEMENTED
-- Archive service-role key is separated from the end-user anon key: IMPLEMENTED
-- Account sidebar and sign-out control: IMPLEMENTED
-- Existing v3.5.3 PDF compression retained: PASSED
-- Existing v3.5.2 parser and Master Data retained unchanged: PASSED
+- Old Supabase phone/SMS API calls removed from application code: PASSED
+- Old `[supabase_auth]` runtime dependency removed: PASSED
 
-Live SMS delivery requires the user's Supabase Phone provider and SMS provider credentials and therefore cannot be completed in the offline test environment.
+## Authentication primitives
+
+- Username normalization and nickname validation: PASSED
+- Optional contact-number cleanup: PASSED
+- Password length and letter/number validation: PASSED
+- Salted PBKDF2-SHA256 password hashing and verification: PASSED
+- Incorrect-password rejection: PASSED
+- Six-digit activation/reset-code generation: PASSED
+- Secret-key HMAC code verification: PASSED
+- Purpose separation between activation and reset codes: PASSED
+
+## Account workflow checks
+
+- One administrator account is read only from Streamlit Secrets: IMPLEMENTED
+- New registrations are stored as `Pending`: IMPLEMENTED
+- Administrator approval changes status to `Code Issued`: IMPLEMENTED
+- User activation changes status to `Active`: IMPLEMENTED
+- Forgot-password requests require an administrator-issued code: IMPLEMENTED
+- User suspension/reactivation/deactivation controls: IMPLEMENTED
+- Five failed sign-ins cause a timed lockout: IMPLEMENTED
+- Inactivity timeout and sign-out: IMPLEMENTED
+- Master Data update restricted to administrator: IMPLEMENTED
+- Authentication event logging: IMPLEMENTED
+
+## Existing IARS behavior
+
+- Automatic PDF archive compression retained: PASSED
+- Exact 27-column external-system export headers retained: PASSED
+- Exact Findings/Response/Frequency/Auditor labels retained: PASSED
+- Blank `by02` behavior retained: PASSED
+- Validated Master Data retained unchanged from the prior package: PASSED
+
+Live Supabase table operations require running `SUPABASE_USER_AUTH_SETUP.sql` in the user's project and therefore were not executed in the offline test environment.

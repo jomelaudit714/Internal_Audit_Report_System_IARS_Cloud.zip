@@ -10,7 +10,12 @@ import pandas as pd
 import streamlit as st
 
 from iars_pdf_editor import pdf_textbox_editor
-from iars_auth import read_auth_config, render_auth_gate, render_account_sidebar
+from iars_auth import (
+    read_auth_config,
+    render_auth_gate,
+    render_account_sidebar,
+    is_admin_user,
+)
 
 from iars_archive import (
     ArchiveConfig,
@@ -574,10 +579,10 @@ archive_ready = archive_is_configured(archive_config) and archive_client is not 
 archive_unlocked = archive_access_granted(archive_config)
 
 st.title("Internal Audit Report System (IARS)")
-st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Secure Login + Auto-Compressed Private PDF Archive v3.6.0")
+st.caption("Permanent Master Data + Multiple PDF extraction + PDF Textbox Editor + Admin-Approved Username Login + Auto-Compressed Private PDF Archive v3.7.0")
 
 with st.sidebar:
-    render_account_sidebar(auth_client, auth_user)
+    render_account_sidebar(auth_client, auth_user, auth_config)
     st.divider()
     st.header("Master Data")
 
@@ -587,18 +592,21 @@ with st.sidebar:
     else:
         st.error("Master Data not found. Upload Master_Data.xlsx first.")
 
-    with st.expander("Update Master Data"):
-        uploaded_master = st.file_uploader(
-            "Upload updated Master_Data.xlsx",
-            type=["xlsx"],
-            key="master_update",
-        )
+    if is_admin_user(auth_user):
+        with st.expander("Update Master Data"):
+            uploaded_master = st.file_uploader(
+                "Upload updated Master_Data.xlsx",
+                type=["xlsx"],
+                key="master_update",
+            )
 
-        if uploaded_master is not None:
-            if st.button("Save Updated Master Data"):
-                save_uploaded_master(uploaded_master)
-                st.cache_data.clear()
-                st.success("Master Data updated. Please refresh the app.")
+            if uploaded_master is not None:
+                if st.button("Save Updated Master Data"):
+                    save_uploaded_master(uploaded_master)
+                    st.cache_data.clear()
+                    st.success("Master Data updated. Please refresh the app.")
+    else:
+        st.caption("Master Data updates are restricted to the administrator.")
 
     st.divider()
     st.header("PDF Archive")
